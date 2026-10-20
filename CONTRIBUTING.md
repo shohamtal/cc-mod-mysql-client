@@ -11,7 +11,7 @@ Thanks for helping! Issues and pull requests are welcome.
 ## Develop
 
 1. Fork the repo and clone your fork.
-2. Load your copy: `claude --plugin-dir ./cc-mod-sql-console`, then type `/sql`. Saving a file hot-reloads the mod.
+2. Load your copy: `claude --plugin-dir ./cc-mod-mysql-client`, then type `/sql`. Saving a file hot-reloads the mod.
 3. Before you open a PR, run both and make sure they pass:
    ```bash
    claude plugin validate .

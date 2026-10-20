@@ -3,10 +3,10 @@ import type { On } from 'claude-code'
 
 import { credentialFingerprint, mysqlInvocation, normalizeServer } from './lib'
 
-const TOOL = 'mcp__sql-console__console'
+const TOOL = 'mcp__mysql-client__console'
 const HOME = '/home/tester'
 const BASE = `${HOME}/.claude/mods/sql`
-const PANE = { plugin: 'sql-console', surface: 'terminal', component: 'Pane', requestId: 'sql', props: { title: 'SQL', isFocused: true, bodyColumns: 110, placement: 'dock' }, viewport: { columns: 110, rows: 44 } } as any
+const PANE = { plugin: 'mysql-client', surface: 'terminal', component: 'Pane', requestId: 'sql', props: { title: 'SQL', isFocused: true, bodyColumns: 110, placement: 'dock' }, viewport: { columns: 110, rows: 44 } } as any
 
 function world(on: On, servers: unknown[]) {
   const files = new Map<string, string>([[`${BASE}/servers.json`, JSON.stringify({ servers })]])

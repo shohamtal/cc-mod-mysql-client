@@ -1,7 +1,7 @@
 import { describe, expect, mock, test } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
-const TOOL = 'mcp__sql-console__console'
+const TOOL = 'mcp__mysql-client__console'
 const HOME = '/home/tester'
 const BASE = `${HOME}/.claude/mods/sql`
 

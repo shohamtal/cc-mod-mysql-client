@@ -1,17 +1,47 @@
-# SQL Console: a Claude Code mod
+# MySQL Client for Claude Code
 
-A MySQL console docked beside the Claude Code terminal. Claude writes queries into it, you check and run them, and Claude reads the result. It's **read-only by default**: a write (data, schema or privileges) runs only after you approve it in the pane.
+A **MySQL client and SQL editor** in a side pane of the Claude Code terminal, like a small database client (think MySQL Workbench's query tab) beside your chat. Claude writes the SQL query into the editor, you check it and press ▶, and the results show as a table that Claude can read. It's **read-only by default**: a write (data, schema or privileges) runs only after you approve it in the pane.
 
-- **Editor:** SQL colors, a ▶ next to every statement, and autocomplete for keywords, databases, tables (after `FROM`/`JOIN`, `db.`) and columns (in `SELECT`/`WHERE`/`ON`/`BY`, `alias.`). Also selection, copy / cut / paste, undo / redo and keyword formatting.
-- **Result:** a table you scroll in both directions. Open a row to see it as `column: value` lines. Find highlights matches; copy as TSV or JSON.
-- **Servers and databases:** any number of servers in a **▾ menu**, each with its own databases, tagged production / staging / development / local (production is red). Passwords come from the file, an environment variable or a command.
-- **Separate consoles:** each session or agent gets its own console file (`/sql --filepath x.json --configfilepath y.json`), and the `mcp__sql-console__console` tool tells the model how to use it.
+![Claude writes a query into the SQL console](docs/claude-writes-query.png)
+
+- **SQL editor:** SQL colors, a ▶ next to every statement, and schema-aware autocomplete for keywords, databases, tables (after `FROM`/`JOIN`, `db.`) and columns (in `SELECT`/`WHERE`/`ON`/`BY`, `alias.`). Also selection, copy / cut / paste, undo / redo and keyword formatting.
+- **Query results:** a table you scroll in both directions. Open a row to see it as `column: value` lines. Find highlights matches; copy as TSV or JSON.
+- **Servers and databases:** any number of MySQL servers in a **▾ menu**, each with its own databases, tagged production / staging / development / local (production is red). Passwords come from the file, an environment variable or a command.
+- **Separate consoles:** each session or agent gets its own console file (`/sql --filepath x.json --configfilepath y.json`), and the `mcp__mysql-client__console` tool tells the model how to use it.
+
+## How it looks
+
+Run a query and browse the results:
+
+![Query results as a table](docs/console.png)
+
+Autocomplete knows your schema (here, the columns of `orders` after `o.`):
+
+![Schema-aware autocomplete](docs/autocomplete.png)
+
+A write asks first and shows exactly what will run:
+
+![The write prompt](docs/write-prompt.png)
+
+Switch servers from the ▾ menu:
+
+![Server menu](docs/server-menu.png)
+
+A server with credentials asks once before its first query:
+
+![Credentials prompt](docs/credentials-prompt.png)
+
+Claude reads the result after you run it:
+
+![Claude reads the result](docs/claude-reads-result.png)
+
+All screenshots use the dummy database in [`demo/`](demo/).
 
 ## Install
 
 ```
-claude plugin marketplace add shohamtal/cc-mod-sql-console
-claude plugin install sql-console@cc-mod-sql-console --scope user
+claude plugin marketplace add shohamtal/cc-mod-mysql-client
+claude plugin install mysql-client@cc-mod-mysql-client --scope user
 ```
 
 Then type `/sql` to toggle the pane.

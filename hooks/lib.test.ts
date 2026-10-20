@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { classifyStatement, mysqlWriteScript, normalizeServer, mysqlInvocation, mysqlScript, parseArgs, parseBatch, parseStatements, readGuard, sliceSegs, statementAt, tableLines, formatSql } from './lib'
+import { GUIDE, classifyStatement, mysqlWriteScript, normalizeServer, mysqlInvocation, mysqlScript, parseArgs, parseBatch, parseStatements, readGuard, sliceSegs, statementAt, tableLines, formatSql } from './lib'
 
 describe('read-only guard', () => {
   test('lets reads through', async () => {
@@ -201,5 +201,12 @@ describe('security review of the write toggle', () => {
     expect(readGuard('SELECT /*+ MAX_EXECUTION_TIME(0) */ * FROM t')).toBeDefined()
     expect(readGuard('SELECT /*+ SET_VAR(sort_buffer_size = 1) */ * FROM t')).toBeDefined()
     expect(readGuard('SELECT /*+ INDEX(t idx) */ * FROM t')).toBeUndefined()
+  })
+})
+
+describe('the tool description', () => {
+  test('fits in the 2048 characters the model sees', async () => {
+    expect(GUIDE.length).toBeLessThanOrEqual(2048)
+    expect(GUIDE.indexOf('Always refused')).toBeLessThan(1000)
   })
 })

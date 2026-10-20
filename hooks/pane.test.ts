@@ -2,7 +2,7 @@ import { expect, test } from 'claude-code/testing'
 
 test('the pane draws on the terminal', async $ => {
   const ui = await $.ui.mount({
-    plugin: 'sql-console',
+    plugin: 'mysql-client',
     surface: 'terminal',
     component: 'Pane',
     requestId: 'sql',

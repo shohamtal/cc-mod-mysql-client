@@ -32,32 +32,33 @@ import {
   mysqlWriteScript,
   pageFrom,
   wrapRows,
+  GUIDE,
 } from './lib'
 
 const PANE = 'sql'
-const query = atom({ plugin: 'sql-console', key: 'query' } as const, '')
-const rev = atom({ plugin: 'sql-console', key: 'rev' } as const, 0)
-const cursorRow = atom({ plugin: 'sql-console', key: 'cursorRow' } as const, 0)
-const result = atom({ plugin: 'sql-console', key: 'result' } as const, null)
-const running = atom({ plugin: 'sql-console', key: 'running' } as const, false)
-const server = atom({ plugin: 'sql-console', key: 'server' } as const, '')
-const database = atom({ plugin: 'sql-console', key: 'database' } as const, '')
-const servers = atom({ plugin: 'sql-console', key: 'servers' } as const, [])
-const showHelp = atom({ plugin: 'sql-console', key: 'showHelp' } as const, false)
-const paste = atom({ plugin: 'sql-console', key: 'paste' } as const, null)
-const schema = atom({ plugin: 'sql-console', key: 'schema' } as const, {})
-const schemaLoading = atom({ plugin: 'sql-console', key: 'schemaLoading' } as const, '')
-const paths = atom({ plugin: 'sql-console', key: 'paths' } as const, null)
-const editorScroll = atom({ plugin: 'sql-console', key: 'editorScroll' } as const, null)
+const query = atom({ plugin: 'mysql-client', key: 'query' } as const, '')
+const rev = atom({ plugin: 'mysql-client', key: 'rev' } as const, 0)
+const cursorRow = atom({ plugin: 'mysql-client', key: 'cursorRow' } as const, 0)
+const result = atom({ plugin: 'mysql-client', key: 'result' } as const, null)
+const running = atom({ plugin: 'mysql-client', key: 'running' } as const, false)
+const server = atom({ plugin: 'mysql-client', key: 'server' } as const, '')
+const database = atom({ plugin: 'mysql-client', key: 'database' } as const, '')
+const servers = atom({ plugin: 'mysql-client', key: 'servers' } as const, [])
+const showHelp = atom({ plugin: 'mysql-client', key: 'showHelp' } as const, false)
+const paste = atom({ plugin: 'mysql-client', key: 'paste' } as const, null)
+const schema = atom({ plugin: 'mysql-client', key: 'schema' } as const, {})
+const schemaLoading = atom({ plugin: 'mysql-client', key: 'schemaLoading' } as const, '')
+const paths = atom({ plugin: 'mysql-client', key: 'paths' } as const, null)
+const editorScroll = atom({ plugin: 'mysql-client', key: 'editorScroll' } as const, null)
 const EMPTY_VIEW: SqlView = { expanded: [], top: 0, cursor: 0, left: 0, search: '', match: 0 }
-const view = atom({ plugin: 'sql-console', key: 'view' } as const, EMPTY_VIEW)
-const menuOpen = atom({ plugin: 'sql-console', key: 'menuOpen' } as const, '')
-const editorCmd = atom({ plugin: 'sql-console', key: 'editorCmd' } as const, null)
-const confirm = atom({ plugin: 'sql-console', key: 'confirm' } as const, null)
+const view = atom({ plugin: 'mysql-client', key: 'view' } as const, EMPTY_VIEW)
+const menuOpen = atom({ plugin: 'mysql-client', key: 'menuOpen' } as const, '')
+const editorCmd = atom({ plugin: 'mysql-client', key: 'editorCmd' } as const, null)
+const confirm = atom({ plugin: 'mysql-client', key: 'confirm' } as const, null)
 // Servers whose writes the person unlocked from the pane, for this session only. Never read from disk.
-const unlocked = atom({ plugin: 'sql-console', key: 'unlocked' } as const, [])
+const unlocked = atom({ plugin: 'mysql-client', key: 'unlocked' } as const, [])
 // Ids and hosts seen tagged production: removing the tag later doesn't count.
-const prodSeen = atom({ plugin: 'sql-console', key: 'prodSeen' } as const, [])
+const prodSeen = atom({ plugin: 'mysql-client', key: 'prodSeen' } as const, [])
 // The longest statement a write prompt shows; longer ones can't be approved from a prompt.
 const SQL_LIMIT = 20_000
 
@@ -85,16 +86,6 @@ const HELP = `**Top bar**
 **Own console per session/agent** — \`/sql --filepath <name>.json [--configfilepath <servers>.json]\`.
 
 Esc returns the keyboard to the prompt · \`/sql\` toggles this pane.`
-
-const GUIDE = `SQL console (a MySQL query console in a pane the user sees; read-only unless the user unlocks writes). Each console is one JSON session file, so sessions and agents never overwrite each other: open your own with this tool (filepath) or the user types /sql --filepath <name>.json [--configfilepath <servers>.json]. The current session's files are kept across reloads.
-
-Session file (default ~/.claude/mods/sql/sessions/default.json): {"server": "<name from config>", "database": "<one of that server's databases>", "cursorRow": <0-based line where the statement the user's Run sends starts>, "query": "<editor text>", "lastRun": {server, database, ms, rows, error?, at}}.
-- query holds one or more SQL statements; a statement ends with ";" or a blank line.
-- To give the user a query, write the session file (keep the other keys); the pane updates within a second. Set "server" (a server id) and "database" for where it should run (staging vs production is the user's call unless they told you), and cursorRow to the statement's first line. Read the file to see the user's edits.
-Result file: the session file with .result.json in place of .json: {server, database, sql, columns, rows (array of arrays of strings, "NULL" for null), rowCount, limited, ms, error?, at}. Read it after the user runs.
-Config file (default ~/.claude/mods/sql/servers.json): {"servers": [{"id","name","host","port","https","username","password" | "passwordEnv" | "passwordCommand","tag","databases":[...],"maxRows"?,"timeoutSec"?}]}. The session file's "server" is a server id. Never print passwords.
-Reads (SELECT / WITH / SHOW / DESCRIBE / EXPLAIN / TABLE / VALUES) run one at a time in a read-only session. A write you put in the console (INSERT / UPDATE / DELETE / REPLACE, CREATE / ALTER / DROP / TRUNCATE / RENAME, GRANT / REVOKE, CALL) opens a prompt for the user, who may run it once or unlock that server for their session (never production); you cannot unlock or approve writes yourself, and never edit servers.json to do so. One statement at a time; files (LOAD, OUTFILE), session/server control (SET, transactions, locks, KILL), server objects, SONAME, DEFINER, system schemas and creating procedures / functions / triggers / events are always refused. Always include a WHERE clause in UPDATE / DELETE unless the user asked for every row, and say plainly when a statement (DDL) can't be undone.
-The user runs statements (▶ in the editor gutter or ctrl+r); do not run them yourself unless asked.`
 
 const DEFAULT_SERVERS = {
   _help:
@@ -658,7 +649,7 @@ export const register: Register = on => {
     return next(e)
   })
 
-  on('tool.call', { tool: 'mcp__sql-console__console' }, async ($, e) => {
+  on('tool.call', { tool: 'mcp__mysql-client__console' }, async ($, e) => {
     // A plugin tool's arguments arrive on the event itself, beside `tool` and `tool_use_id`.
     const input = e as unknown as { action?: string; filepath?: string; configfilepath?: string }
     const action = input.action ?? 'open'
