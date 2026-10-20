@@ -418,7 +418,7 @@ export function parseArgs(args: string): { file?: string; config?: string; rest:
 // Anything that sends a secret or runs a program counts, with or without a username.
 export function credentialSource(s: DbServer): string | undefined {
   const parts: string[] = []
-  if (s.username) parts.push(`user ${s.username}`)
+  if (s.username) parts.push(`user ${JSON.stringify(s.username)}`)
   if (s.passwordCommand) parts.push(`password from the command ${JSON.stringify(s.passwordCommand)}`)
   else if (s.passwordEnv) parts.push(`password from $${JSON.stringify(s.passwordEnv).slice(1, -1)}`)
   else if (s.password) parts.push('password from servers.json')
