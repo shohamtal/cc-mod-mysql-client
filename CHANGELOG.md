@@ -2,7 +2,7 @@
 
 ## 0.2.3
 
-- **A finished query no longer overwrites a newer session file:** when the agent or another editor writes the session file while a query runs (or before a delayed editor save), the file's query, cursor, server and database are kept, only `lastRun` is added, and the pane reloads them. Reported in the catalogue review.
+- **A finished query no longer overwrites a newer session file:** when the agent or another editor writes the session file while a query runs (or before a delayed editor save), the file's query, cursor, server and database are kept, only `lastRun` is added, and the pane reloads them. A server or database you pick from the menu still wins. A change is detected by modification time or by content, so two writes in one time tick count too. An outside write that lands within the 250 ms after your last keystroke wins over that keystroke. Reported in the catalogue review.
 
 ## 0.2.2
 

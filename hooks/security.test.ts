@@ -238,6 +238,20 @@ describe('clipboard and panning', () => {
 })
 
 describe('session file edits made while a query runs', () => {
+  test("the person's server pick wins over a session file the agent just wrote, and keeps the agent's query", async ($, on) => {
+    const file = `${BASE}/sessions/pick.json`
+    const w = world(on, [{ id: 'a', name: 'A', host: 'a.example', databases: ['app'] }, { id: 'b', name: 'B', host: 'b.example', databases: ['app'] }])
+    await $.tool.call({ tool: TOOL, action: 'status', filepath: 'pick.json' } as any)
+    const ui: any = await $.ui.mount(PANE)
+    const st = JSON.parse(w.files.get(file)!)
+    w.files.set(file, JSON.stringify({ ...st, server: 'a', query: 'SELECT 3 AS agent' }))
+    await ui.press({ key: 'server-menu' })
+    await ui.press({ key: 'pick:b' })
+    const saved = JSON.parse(w.files.get(file)!)
+    expect(saved.server).toBe('b')
+    expect(saved.query).toBe('SELECT 3 AS agent')
+  })
+
   test('a finished query records lastRun without replacing a newer query someone else wrote', async ($, on) => {
     const file = `${BASE}/sessions/race.json`
     const w = world(on, [{ id: 'local', name: 'Local', host: 'localhost', databases: ['app'] }], {
