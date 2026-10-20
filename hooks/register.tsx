@@ -569,6 +569,18 @@ export const register: Register = on => {
       if ((await $.ui.panes()).some(pane => pane.id === PANE)) await $.ui.close({ id: PANE })
       return { result: 'SQL console closed.' }
     }
+    // An agent's console files stay inside the mod's folder: other paths are the person's call
+    // (/sql --filepath … --configfilepath …).
+    if (!base) await ensureBase($)
+    const inside = async (p: string | undefined, under: string, root: string) => {
+      if (!p) return true
+      const want = await resolvePath($, p.endsWith('.json') || under === base ? p : `${p}.json`, under)
+      const real = (await $.fs.stat(want, { resolve: true }).catch(() => undefined))?.realPath ?? want
+      const top = (await $.fs.stat(root, { resolve: true }).catch(() => undefined))?.realPath ?? root
+      return !/(^|\/)\.\.(\/|$)/.test(want) && real.startsWith(top + '/')
+    }
+    if (!(await inside(input.filepath, `${base}/sessions`, base))) return { result: `filepath must be inside ${base}/sessions/. Ask the user to open other files with /sql --filepath.`, isError: true }
+    if (!(await inside(input.configfilepath, base, base))) return { result: `configfilepath must be inside ${base}/. Ask the user to open other configs with /sql --configfilepath.`, isError: true }
     const refused = await attach($, input.filepath, input.configfilepath)
     if (refused) return { result: refused, isError: true }
     let placed = ''

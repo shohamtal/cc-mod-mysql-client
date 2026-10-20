@@ -10,6 +10,7 @@ describe('read-only guard', () => {
       "SELECT 'drop table x; delete' AS s", 'SELECT `update`, `delete` FROM t', "SELECT * FROM t WHERE note = 'it''s; fine'",
       'WITH x AS (SELECT 1 AS a) SELECT * FROM x', 'SHOW VARIABLES LIKE "max%"', 'SELECT CONVERT(name USING utf8mb4) FROM t',
       'SHOW CHARACTER SET', 'SELECT * FROM t -- trailing comment', 'SELECT update_date FROM t', 'TABLE users',
+      'SELECT 1-- comment;DROP TABLE t', 'SELECT 1 --\tcomment', 'SELECT 3--1',
     ]) expect(readGuard(sql)).toBeUndefined()
   })
 
@@ -30,6 +31,9 @@ describe('read-only guard', () => {
       'SELECT 1; DELETE FROM t', 'SELECT 1;\nDROP TABLE t;', 'SELECT 1 /*! ; DELETE FROM t */', 'SELECT /*!50000 SLEEP(1) */ 1',
       'SELECT 1\n\\! rm -rf ~', 'SELECT 1 \\G', 'SELECT 1\nsystem ls', 'SELECT 1\nsource /tmp/evil.sql', "SELECT 'unterminated",
       'SELECT 1 /* never closed', 'SELECT 1\ndelimiter //', 'SELECT 1\nconnect other_host', 'SELECT 1\nuse mysql',
+      // `--` without a following space is not a comment to MySQL (security review, finding 1)
+      'SELECT 1--1;CREATE TABLE pwned(i INT)', 'SELECT 1--x\n;DROP TABLE t', 'SELECT 2 --1;DELETE FROM t',
+      "SELECT 1--'\n;INSERT INTO t VALUES(1)",
     ]) expect(readGuard(sql)).toBeDefined()
   })
 })
@@ -45,7 +49,7 @@ describe('running', () => {
 
   test('every query runs inside a read-only session and transaction', async () => {
     const script = mysqlScript('SELECT 1;', { id: 's', name: 's', host: 'h', maxRows: 50 })
-    expect(script).toBe('SET SESSION TRANSACTION READ ONLY;\nSET SESSION sql_select_limit = 50;\nSET SESSION max_execution_time = 60000;\nSTART TRANSACTION READ ONLY;\nSELECT 1;\nROLLBACK;\n')
+    expect(script).toBe("SET SESSION sql_mode = REPLACE(REPLACE(@@SESSION.sql_mode, 'NO_BACKSLASH_ESCAPES', ''), 'ANSI_QUOTES', '');\n" + 'SET SESSION TRANSACTION READ ONLY;\nSET SESSION sql_select_limit = 50;\nSET SESSION max_execution_time = 60000;\nSTART TRANSACTION READ ONLY;\nSELECT 1;\nROLLBACK;\n')
   })
 
   test('parses mysql batch output', async () => {

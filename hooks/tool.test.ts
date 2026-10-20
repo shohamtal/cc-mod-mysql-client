@@ -75,4 +75,13 @@ describe('the console tool reads its arguments from the call', () => {
     const r = await $.tool.call({ tool: TOOL, action: 'status', configfilepath: 'nope.json' } as any)
     expect(text(r)).toContain('Config file not found')
   })
+
+  test('an agent cannot write console files outside the mod folder', async ($, on) => {
+    const w = world(on)
+    for (const filepath of ['/tmp/evil.json', '~/x.json', '../../escape']) {
+      const r: any = await $.tool.call({ tool: TOOL, action: 'status', filepath } as any)
+      expect(text(r)).toContain('must be inside')
+    }
+    expect([...w.files.keys()].every(k => k.startsWith(BASE))).toBe(true)
+  })
 })

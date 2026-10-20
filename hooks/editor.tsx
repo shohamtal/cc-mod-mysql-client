@@ -51,7 +51,7 @@ function lex(line: string): [string, string][] {
       j = Math.min(j + 1, line.length)
       out.push([line.slice(i, j), c === '`' ? 'id' : 's'])
       i = j
-    } else if (c === '#' || (c === '-' && line[i + 1] === '-')) {
+    } else if (c === '#' || (c === '-' && line[i + 1] === '-' && (i + 2 >= line.length || /\s/.test(line[i + 2]!)))) {
       out.push([line.slice(i), 'c'])
       break
     } else if (c === '/' && line[i + 1] === '*') {
@@ -182,7 +182,7 @@ export const suggest = (s: State, schema: Schema | undefined): Suggest | undefin
   const start = s.col - prefix.length
   // Nothing inside a string or comment.
   const lastLine = before.split('\n').pop() ?? ''
-  if ((lastLine.match(/'/g)?.length ?? 0) % 2 === 1 || /--|#/.test(lastLine.replace(/'[^']*'/g, ''))) return undefined
+  if ((lastLine.match(/'/g)?.length ?? 0) % 2 === 1 || /--(\s|$)|#/.test(lastLine.replace(/'[^']*'/g, ''))) return undefined
   let items: string[] = []
   const tables = tablesIn(all, schema)
   const colsOf = (full: string) => schema.cols[full] ?? []

@@ -7,6 +7,10 @@ export type Statement = { start: number; end: number; sql: string }
 
 // ---- statements ----
 
+// MySQL starts a `--` comment only when whitespace, a control character or the end follows it:
+// `1--1` is arithmetic. Every reader of SQL here must agree with the server on this.
+export const isDashComment = (s: string, i: number) => s[i] === '-' && s[i + 1] === '-' && (i + 2 >= s.length || /[\s\x00-\x1f]/.test(s[i + 2]!))
+
 // Splits the editor text into statements: a `;` outside strings and comments ends one,
 // and so does a blank line. `start` is the statement's first line (where ▶ sits).
 export function parseStatements(text: string): Statement[] {
@@ -16,7 +20,7 @@ export function parseStatements(text: string): Statement[] {
   let quote: string | undefined
   let block = false
   const close = (end: number) => {
-    if (cur && cur.parts.join('\n').replace(/--.*$|#.*$/gm, '').trim()) {
+    if (cur && cur.parts.join('\n').replace(/--(\s.*)?$|#.*$/gm, '').trim()) {
       out.push({ start: cur.start, end, sql: cur.parts.join('\n').trim() })
     }
     cur = undefined
@@ -41,7 +45,7 @@ export function parseStatements(text: string): Statement[] {
       }
       if (c === "'" || c === '"' || c === '`') quote = c
       else if (c === '/' && line[i + 1] === '*') { block = true; i++ }
-      else if (c === '#' || (c === '-' && line[i + 1] === '-')) break
+      else if (c === '#' || isDashComment(line, i)) break
       else if (c === ';') {
         const piece = line.slice(from, i)
         if (!cur && piece.trim()) cur = { start: r, parts: [] }
@@ -52,7 +56,7 @@ export function parseStatements(text: string): Statement[] {
     }
     const rest = line.slice(from)
     if (cur) cur.parts.push(rest)
-    else if (rest.trim() && !/^\s*(--|#)/.test(rest)) cur = { start: r, parts: [rest] }
+    else if (rest.trim() && !/^\s*(--(\s|$)|#)/.test(rest)) cur = { start: r, parts: [rest] }
   }
   close(lines.length - 1)
   return out
@@ -90,7 +94,7 @@ export function skeleton(sql: string): string | undefined {
       if (end < 0) return undefined
       out += ' '
       i = end + 1
-    } else if (c === '#' || (c === '-' && sql[i + 1] === '-')) {
+    } else if (c === '#' || isDashComment(sql, i)) {
       const end = sql.indexOf('\n', i)
       out += ' '
       i = end < 0 ? sql.length : end
@@ -212,6 +216,9 @@ export function mysqlScript(sql: string, server: DbServer): string {
   const maxRows = Math.max(1, Math.min(100_000, server.maxRows ?? 1000))
   const ms = Math.max(1, server.timeoutSec ?? 60) * 1000
   return [
+    // The guard reads strings with backslash escapes and double quotes as strings; pin the
+    // server to the same reading, whatever the user's or server's sql_mode says.
+    "SET SESSION sql_mode = REPLACE(REPLACE(@@SESSION.sql_mode, 'NO_BACKSLASH_ESCAPES', ''), 'ANSI_QUOTES', '');",
     'SET SESSION TRANSACTION READ ONLY;',
     `SET SESSION sql_select_limit = ${maxRows};`,
     `SET SESSION max_execution_time = ${ms};`,
@@ -377,7 +384,7 @@ export function toTsv(columns: string[], rows: string[][]): string {
 // Uppercases SQL keywords outside strings, comments and quoted names.
 export function formatSql(text: string, keywords: readonly string[]): string {
   const kw = new Set(keywords)
-  return text.replace(/('(?:[^'\\]|\\.|'')*'|"(?:[^"\\]|\\.)*"|`[^`]*`|--[^\n]*|#[^\n]*|\/\*[\s\S]*?\*\/)|\b([A-Za-z_]+)\b/g, (m, skip: string | undefined, word: string | undefined) =>
+  return text.replace(/('(?:[^'\\]|\\.|'')*'|"(?:[^"\\]|\\.)*"|`[^`]*`|--(?=\s|$)[^\n]*|#[^\n]*|\/\*[\s\S]*?\*\/)|\b([A-Za-z_]+)\b/g, (m, skip: string | undefined, word: string | undefined) =>
     skip ? skip : word && kw.has(word.toUpperCase()) ? word.toUpperCase() : m,
   )
 }
