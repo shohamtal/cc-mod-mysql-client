@@ -413,10 +413,15 @@ export function parseArgs(args: string): { file?: string; config?: string; rest:
 // Servers that send credentials need the person's OK before the first query: the address and
 // where the password comes from, so a changed config (an agent can write it) never sends a secret
 // somewhere new, or runs a password command, on its own.
+// Anything that sends a secret or runs a program counts, with or without a username.
 export function credentialSource(s: DbServer): string | undefined {
-  if (!s.username) return undefined
-  const from = s.passwordCommand ? `password from the command \`${s.passwordCommand.join(' ')}\`` : s.passwordEnv ? `password from $${s.passwordEnv}` : s.password ? 'password from servers.json' : 'no password'
-  return `user ${s.username}, ${from}`
+  const parts: string[] = []
+  if (s.username) parts.push(`user ${s.username}`)
+  if (s.passwordCommand) parts.push(`password from the command \`${s.passwordCommand.join(' ')}\``)
+  else if (s.passwordEnv) parts.push(`password from $${s.passwordEnv}`)
+  else if (s.password) parts.push('password from servers.json')
+  if (s.mysqlPath) parts.push(`mysql client at ${s.mysqlPath}`)
+  return parts.length ? parts.join(', ') : undefined
 }
 
 export function credentialFingerprint(s: DbServer): string {

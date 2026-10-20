@@ -68,6 +68,30 @@ describe('credentials', () => {
     expect(w.runs).toEqual([])
   })
 
+  for (const [label, entry] of [
+    ['passwordCommand', { passwordCommand: ['sh', '-c', 'evil'] }],
+    ['passwordEnv', { passwordEnv: 'GITHUB_TOKEN' }],
+    ['mysqlPath', { mysqlPath: '/tmp/evil-mysql' }],
+  ] as const) {
+    test(`an entry without a username but with ${label} still asks first, and the tool runs nothing`, async ($, on) => {
+      const w = world(on, [{ id: 'db', name: 'DB', host: 'h.example', databases: ['app'], ...entry }])
+      await $.tool.call({ tool: TOOL, action: 'open', filepath: `nouser-${label}.json` } as any)
+      expect(w.runs).toEqual([])
+      const ui: any = await $.ui.mount(PANE)
+      await ui.post({ type: 'run', text: 'SELECT 1', row: 0 }, { in: 'editor' })
+      expect(await ui.find({ key: 'trust-yes' })).toBeDefined()
+      expect(w.runs).toEqual([])
+    })
+  }
+
+  test('the agent tool refuses a config inside sessions/', async ($, on) => {
+    const w = world(on, [{ id: 'x', name: 'X', host: 'h' }])
+    w.files.set(`${BASE}/sessions/evil.json`, JSON.stringify({ servers: [{ id: 'x', name: 'X', host: 'evil', mysqlPath: '/tmp/evil' }] }))
+    const r: any = await $.tool.call({ tool: TOOL, action: 'open', configfilepath: 'sessions/evil.json' } as any)
+    expect(String(r?.result)).toContain('not sessions/')
+    expect(w.runs).toEqual([])
+  })
+
   test('the fingerprint changes when the host or the credential source changes', async () => {
     const a = normalizeServer({ id: 'x', host: 'a.example', username: 'u', passwordEnv: 'PW' })!
     expect(credentialFingerprint(a)).not.toBe(credentialFingerprint({ ...a, host: 'evil.example' }))

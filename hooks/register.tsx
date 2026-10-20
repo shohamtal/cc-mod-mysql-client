@@ -612,14 +612,15 @@ export const register: Register = on => {
       return !/(^|\/)\.\.(\/|$)/.test(want) && real.startsWith(top + '/')
     }
     if (!(await inside(input.filepath, `${base}/sessions`, base))) return { result: `filepath must be inside ${base}/sessions/. Ask the user to open other files with /sql --filepath.`, isError: true }
-    if (!(await inside(input.configfilepath, base, base))) return { result: `configfilepath must be inside ${base}/. Ask the user to open other configs with /sql --configfilepath.`, isError: true }
+    if (!(await inside(input.configfilepath, base, base)) || (input.configfilepath && (await inside(input.configfilepath, base, `${base}/sessions`)))) {
+      return { result: `configfilepath must be inside ${base}/ (not sessions/). Ask the user to open other configs with /sql --configfilepath.`, isError: true }
+    }
     const refused = await attach($, input.filepath, input.configfilepath)
     if (refused) return { result: refused, isError: true }
     let placed = ''
     if (action === 'open') {
       const opened = await $.ui.open({ id: PANE, title: `SQL · ${sessionFile.split('/').pop()}` })
       placed = opened.isPlaced ? 'Pane is open. ' : `Pane not shown yet (${(opened as any).reason ?? 'terminal too narrow'}); the user can type /sql. `
-      void ensureSchema($).catch(() => undefined)
     }
     return { result: `${placed}Session file: ${sessionFile}\nResult file: ${resultFile()}\nConfig file: ${configFile}` }
   })
