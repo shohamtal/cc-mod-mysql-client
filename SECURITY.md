@@ -12,17 +12,17 @@
   - `bash` and `mysql` for queries
   - the first clipboard reader that works for `ctrl+v` (`pbpaste`, `wl-paste`, `xclip`, `powershell.exe`)
   - `printenv` and your `passwordCommand` when configured
-- **Writes to the database:** none, enforced in code, whatever the database user may do:
-  1. **Statement guard:** `readGuard` in `hooks/lib.ts` allows one `SELECT` / `WITH` / `SHOW` / `DESCRIBE` / `EXPLAIN` / `TABLE` / `VALUES` statement at a time. It checks the statement with strings and comments removed. It refuses:
-     - writes, DDL, locks, `SET` and transaction commands
-     - `INTO OUTFILE`
-     - `/*! */` executable comments
-     - mysql client commands
-  2. **Read-only session:** every statement runs inside `SET SESSION TRANSACTION READ ONLY` and `START TRANSACTION READ ONLY … ROLLBACK`.
-  3. **Client:** `mysql` runs with `--skip-system-command` and `--defaults-file` (its own option file only, never `~/.my.cnf`). The session `sql_mode` drops `NO_BACKSLASH_ESCAPES` and `ANSI_QUOTES`.
+- **Writes to the database:** locked by default, enforced in code whatever the database user may do.
+  1. **Reads:** `readGuard` in `hooks/lib.ts` allows one `SELECT` / `WITH` / `SHOW` / `DESCRIBE` / `EXPLAIN` / `TABLE` / `VALUES` statement at a time, checked with strings and comments removed. It runs inside `SET SESSION TRANSACTION READ ONLY` and `START TRANSACTION READ ONLY … ROLLBACK`.
+  2. **Writes:** `classifyStatement` allows one plain `INSERT` / `UPDATE` / `DELETE`. It runs only after the person approves the exact statement in the pane (once, or for the session on a server not tagged production; unlocks are in memory only), in one transaction.
+  3. **Always refused:**
+     - DDL, privileges, `REPLACE`, `LOAD`, `INTO OUTFILE`, `LOAD_FILE`
+     - `CALL`, locks, `SET`, transaction commands
+     - `/*! */`, multiple statements, mysql client commands
+  4. **Client:** `mysql` runs with `--skip-system-command` and `--defaults-file` (its own option file only, never `~/.my.cnf`). The session `sql_mode` drops `NO_BACKSLASH_ESCAPES` and `ANSI_QUOTES`.
 - **Credentials ask first:** a server with a user needs the person's OK once before its first query, keyed to its host and credential source; a `passwordCommand` never runs before that.
 
-Use a read-only database user anyway.
+Use a database user with only the rights you need.
 
 ## Hardening
 

@@ -1,6 +1,6 @@
 # SQL Console: a Claude Code mod
 
-A **read-only** MySQL console docked beside the Claude Code terminal. Claude writes queries into it, you check and run them, and Claude reads the result.
+A MySQL console docked beside the Claude Code terminal. Claude writes queries into it, you check and run them, and Claude reads the result. It's **read-only by default**: an `INSERT`, `UPDATE` or `DELETE` runs only after you approve it in the pane.
 
 - **Editor:** SQL colors, a ▶ next to every statement, and autocomplete for keywords, databases, tables (after `FROM`/`JOIN`, `db.`) and columns (in `SELECT`/`WHERE`/`ON`/`BY`, `alias.`). Also selection, copy / cut / paste, undo / redo and keyword formatting.
 - **Result:** a table you scroll in both directions. Open a row to see it as `column: value` lines. Find highlights matches; copy as TSV or JSON.
@@ -16,26 +16,37 @@ claude plugin install sql-console@cc-mod-sql-console --scope user
 
 Then type `/sql` to toggle the pane.
 
-## Read-only, enforced in code
+## Writes are locked, enforced in code
 
-Even when the database user could write, the console sends only one read statement at a time:
+Reads run freely, one statement at a time, inside a read-only session. **Writes ask first**, even if the database user could write.
 
-1. **The statement guard** (`readGuard` in `hooks/lib.ts`):
-   - Only `SELECT`, `WITH`, `SHOW`, `DESCRIBE`, `EXPLAIN`, `TABLE` or `VALUES`, one statement at a time.
-   - It is checked with strings and comments removed, so a write can't hide inside them.
-   - It refuses:
-     - writes, DDL and privilege changes
-     - locks (`FOR UPDATE`, `LOCK`, `GET_LOCK`), `SET`, and transaction commands
-     - `INTO OUTFILE`, `INTO @var`, `LOAD_FILE`
-     - `/*! … */` comments, which MySQL runs as code
-     - mysql client commands (`\!`, `system`, `source`, …)
-2. **The server enforces it too:** each statement runs as `SET SESSION TRANSACTION READ ONLY; START TRANSACTION READ ONLY; … ; ROLLBACK`, with `sql_select_limit` and `max_execution_time` set. So even a statement the guard missed can't write.
-3. **The client:**
-   - `mysql` runs with `--skip-system-command`, and with `--defaults-file` set to the mod's own option file, so `~/.my.cnf` and `/etc/my.cnf` are never read. A pager, tee file or init command planted there has no effect.
-   - The password goes through that option file, read from a process substitution, never on the command line or on disk.
-   - The session's `sql_mode` drops `NO_BACKSLASH_ESCAPES` and `ANSI_QUOTES`, so the server reads strings the way the guard does.
+**Reads (`SELECT`, `WITH`, `SHOW`, `DESCRIBE`, `EXPLAIN`, `TABLE`, `VALUES`)** pass `readGuard` (`hooks/lib.ts`). Each one runs as `SET SESSION TRANSACTION READ ONLY; START TRANSACTION READ ONLY; …; ROLLBACK`, with `sql_select_limit` and `max_execution_time` set.
 
-**Credentials ask first.** A server with a user asks once before its first query or schema load: *"Connect to <server> with these credentials? db.example.com:3306 gets user reader, password from $DB_PW"*. It asks again whenever its host or credential source changes in the config, so an edited config can't send your password somewhere new. A `passwordCommand` never runs before you allow it.
+**`INSERT`, `UPDATE` and `DELETE`** open a prompt that shows:
+- the server and database
+- a red warning when an `UPDATE` or `DELETE` has no `WHERE` clause
+- the **exact statement**, one character per column (anything outside plain ASCII is shown as `\uXXXX`), paged to fit the pane
+
+Its buttons, which appear only once you've seen the whole statement:
+- **Run this statement once:** runs exactly what the prompt showed, in one transaction (`START TRANSACTION; …; SELECT ROW_COUNT(); COMMIT`). The result shows the affected rows.
+- **Unlock for this session:** later writes to this server run without asking until Claude Code exits. The unlock is tied to the server entry as it was, and it's never offered for a server tagged `production`. **🔓** locks it again.
+- **Cancel**
+
+Unlocks live in memory only: no file the console reads can unlock writes, and agents can't approve them.
+
+**Always refused, unlocked or not:**
+- DDL (`CREATE`, `ALTER`, `DROP`, `TRUNCATE`, `RENAME`)
+- privileges
+- `REPLACE`, `LOAD DATA`, `INTO OUTFILE` / `DUMPFILE`, `LOAD_FILE`
+- `CALL`, `DO`, `HANDLER`, locks, `SET`, transaction commands
+- `/*! */` executable comments, more than one statement, and mysql client commands (`\!`, `system`, `source`, …)
+
+**The client:**
+- `mysql` runs with `--skip-system-command`, and with `--defaults-file` set to the mod's own option file, so `~/.my.cnf` and `/etc/my.cnf` are never read.
+- The password goes through that option file, read from a process substitution, never on the command line or on disk.
+- The session's `sql_mode` drops `NO_BACKSLASH_ESCAPES` and `ANSI_QUOTES`, so the server reads strings the way the guard does.
+
+**Credentials ask first.** A server with a user or password source asks once before its first query or schema load: *"Connect to <server> with these credentials? db.example.com:3306 gets user "reader", password from $DB_PW"*. It asks again whenever its host or credential source changes in the config.
 
 **Recommended:** a deny rule in `~/.claude/settings.json` makes Claude Code refuse edits to the console's config through its file tools. Shell commands aren't covered, so keep Bash on approval:
 
@@ -43,7 +54,7 @@ Even when the database user could write, the console sends only one read stateme
 { "permissions": { "deny": ["Edit(~/.claude/mods/sql/*.json)", "Edit(~/.claude/plugins/store/**)", "Edit(~/.my.cnf)"] } }
 ```
 
-Use a read-only database user anyway.
+Use a database user with only the rights you need.
 
 ## Configure
 

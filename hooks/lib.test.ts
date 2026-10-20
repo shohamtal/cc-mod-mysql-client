@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { normalizeServer, mysqlInvocation, mysqlScript, parseArgs, parseBatch, parseStatements, readGuard, sliceSegs, statementAt, tableLines, formatSql } from './lib'
+import { classifyStatement, mysqlWriteScript, normalizeServer, mysqlInvocation, mysqlScript, parseArgs, parseBatch, parseStatements, readGuard, sliceSegs, statementAt, tableLines, formatSql } from './lib'
 
 describe('read-only guard', () => {
   test('lets reads through', async () => {
@@ -112,5 +112,39 @@ describe('servers', () => {
   test('an empty host stays listed so the pane can say what to fill in', async () => {
     expect(normalizeServer({ id: 'new', host: '' })!.host).toBe('')
     expect(normalizeServer({ id: 'x' })).toBeUndefined()
+  })
+})
+
+describe('writes the person can unlock', () => {
+  test('only plain INSERT, UPDATE and DELETE are writes', async () => {
+    expect(classifyStatement('INSERT INTO t (a) VALUES (1)')).toEqual({ kind: 'write', verb: 'INSERT', noWhere: false })
+    expect(classifyStatement("UPDATE t SET a = 'x' WHERE id = 3")).toEqual({ kind: 'write', verb: 'UPDATE', noWhere: false })
+    expect(classifyStatement('DELETE FROM t WHERE id = 3;')).toEqual({ kind: 'write', verb: 'DELETE', noWhere: false })
+    expect(classifyStatement('INSERT INTO t SELECT * FROM u WHERE x = 1')).toEqual({ kind: 'write', verb: 'INSERT', noWhere: false })
+    expect(classifyStatement('INSERT INTO t (a) VALUES (1) ON DUPLICATE KEY UPDATE a = 2').kind).toBe('write')
+    expect(classifyStatement('SELECT 1').kind).toBe('read')
+  })
+
+  test('UPDATE or DELETE without WHERE is flagged', async () => {
+    expect(classifyStatement('UPDATE t SET a = 1')).toEqual({ kind: 'write', verb: 'UPDATE', noWhere: true })
+    expect(classifyStatement("DELETE FROM t -- WHERE id = 1")).toEqual({ kind: 'write', verb: 'DELETE', noWhere: true })
+    expect(classifyStatement("UPDATE t SET note = 'where' ")).toEqual({ kind: 'write', verb: 'UPDATE', noWhere: true })
+  })
+
+  test('everything else that changes something stays refused, unlocked or not', async () => {
+    for (const sql of [
+      'DROP TABLE t', 'TRUNCATE t', 'ALTER TABLE t ADD c INT', 'CREATE TABLE x (a INT)', 'RENAME TABLE a TO b', 'GRANT ALL ON *.* TO x',
+      'REPLACE INTO t VALUES (1)', 'LOAD DATA INFILE "x" INTO TABLE t', 'LOAD DATA LOCAL INFILE "/etc/passwd" INTO TABLE t',
+      'INSERT INTO t SELECT * FROM u INTO OUTFILE "/tmp/x"', 'DELETE FROM t WHERE id = GET_LOCK("x", 1)', 'CALL p()',
+      'UPDATE t SET a = 1; DROP TABLE t', 'DELETE FROM t WHERE id = 1--1;DROP TABLE u', 'INSERT INTO t VALUES (1) /*! ; DROP TABLE t */',
+      'UPDATE t SET a = 1\nsystem rm -rf ~', 'SET autocommit = 0', 'START TRANSACTION', 'COMMIT', 'LOCK TABLES t WRITE',
+      'UPDATE t SET a = LOAD_FILE("/etc/passwd") WHERE id = 1', 'WITH x AS (SELECT 1) DELETE FROM t',
+    ]) expect(classifyStatement(sql).kind).toBe('refused')
+  })
+
+  test('an approved write runs in one transaction and reports affected rows, without the read-only session', async () => {
+    expect(mysqlWriteScript('UPDATE t SET a = 1 WHERE id = 2;')).toBe(
+      "SET SESSION sql_mode = REPLACE(REPLACE(@@SESSION.sql_mode, 'NO_BACKSLASH_ESCAPES', ''), 'ANSI_QUOTES', '');\nSTART TRANSACTION;\nUPDATE t SET a = 1 WHERE id = 2;\nSELECT ROW_COUNT() AS affected_rows;\nCOMMIT;\n",
+    )
   })
 })

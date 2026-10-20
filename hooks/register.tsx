@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, Timer } from 'claude-code'
 
-import type { SqlResult, SqlSchema, SqlServer, SqlView } from '../types'
+import type { SqlConfirm, SqlResult, SqlSchema, SqlServer, SqlUnlock, SqlView, SqlWritePrompt } from '../types'
 import { FUNCTIONS, KEYWORDS } from './editor'
 import {
   findMatches,
@@ -28,6 +28,10 @@ import {
   credentialSource,
   credentialFingerprint,
   asciiView,
+  classifyStatement,
+  mysqlWriteScript,
+  pageFrom,
+  wrapRows,
 } from './lib'
 
 const PANE = 'sql'
@@ -50,9 +54,15 @@ const view = atom({ plugin: 'sql-console', key: 'view' } as const, EMPTY_VIEW)
 const menuOpen = atom({ plugin: 'sql-console', key: 'menuOpen' } as const, '')
 const editorCmd = atom({ plugin: 'sql-console', key: 'editorCmd' } as const, null)
 const confirm = atom({ plugin: 'sql-console', key: 'confirm' } as const, null)
+// Servers whose writes the person unlocked from the pane, for this session only. Never read from disk.
+const unlocked = atom({ plugin: 'sql-console', key: 'unlocked' } as const, [])
+// Ids and hosts seen tagged production: removing the tag later doesn't count.
+const prodSeen = atom({ plugin: 'sql-console', key: 'prodSeen' } as const, [])
+// The longest statement a write prompt shows; longer ones can't be approved from a prompt.
+const SQL_LIMIT = 20_000
 
 const HELP = `**Top bar**
-- **▾ Server** / **▾ Database** — open the list and pick one (from \`servers.json\`; ● is active; production is red) · **↶ ↷** undo / redo
+- **▾ Server** / **▾ Database** — open the list and pick one (from \`servers.json\`; ● is active; production is red) · **🔒 / 🔓** writes locked / on · **↶ ↷** undo / redo
 - **Format** — uppercase SQL keywords · **↻ Schema** — reload table and column names · **Help** — this screen
 
 **Editor** (click it to type)
@@ -68,7 +78,7 @@ const HELP = `**Top bar**
 - Enter / Space / click — open a row as column: value lines · \`e\` open all · \`c\` close all
 - \`y\` copy as TSV · \`J\` copy as JSON · \`/\` or \`ctrl+f\` find · \`n\`/\`N\` next/previous
 
-**Read-only** — only SELECT, WITH, SHOW, DESCRIBE, EXPLAIN, TABLE and VALUES run, one statement at a time, inside a read-only session and transaction. Anything that could write, lock or change the session is refused, whatever the database user may do.
+**Writes are locked** — reads (SELECT, WITH, SHOW, DESCRIBE, EXPLAIN, TABLE, VALUES) run one statement at a time inside a read-only session and transaction. An INSERT, UPDATE or DELETE opens a prompt that shows the exact statement: **Run this statement once**, **Unlock for this session** (not on production servers) or **Cancel**; 🔒 / 🔓 shows and resets the lock. Everything else that changes something (DDL, privileges, LOAD, OUTFILE, CALL, locks, transactions, SET) is always refused.
 
 **Files** — one JSON session file per console (default \`~/.claude/mods/sql/sessions/default.json\`: server, database, cursorRow, query, lastRun) + \`<name>.result.json\`; servers in \`~/.claude/mods/sql/servers.json\`. Edits show here live.
 
@@ -76,14 +86,14 @@ const HELP = `**Top bar**
 
 Esc returns the keyboard to the prompt · \`/sql\` toggles this pane.`
 
-const GUIDE = `SQL console (a read-only MySQL query console in a pane the user sees). Each console is one JSON session file, so sessions and agents never overwrite each other: open your own with this tool (filepath) or the user types /sql --filepath <name>.json [--configfilepath <servers>.json]. The current session's files are kept across reloads.
+const GUIDE = `SQL console (a MySQL query console in a pane the user sees; read-only unless the user unlocks writes). Each console is one JSON session file, so sessions and agents never overwrite each other: open your own with this tool (filepath) or the user types /sql --filepath <name>.json [--configfilepath <servers>.json]. The current session's files are kept across reloads.
 
 Session file (default ~/.claude/mods/sql/sessions/default.json): {"server": "<name from config>", "database": "<one of that server's databases>", "cursorRow": <0-based line where the statement the user's Run sends starts>, "query": "<editor text>", "lastRun": {server, database, ms, rows, error?, at}}.
 - query holds one or more SQL statements; a statement ends with ";" or a blank line.
 - To give the user a query, write the session file (keep the other keys); the pane updates within a second. Set "server" (a server id) and "database" for where it should run (staging vs production is the user's call unless they told you), and cursorRow to the statement's first line. Read the file to see the user's edits.
 Result file: the session file with .result.json in place of .json: {server, database, sql, columns, rows (array of arrays of strings, "NULL" for null), rowCount, limited, ms, error?, at}. Read it after the user runs.
 Config file (default ~/.claude/mods/sql/servers.json): {"servers": [{"id","name","host","port","https","username","password" | "passwordEnv" | "passwordCommand","tag","databases":[...],"maxRows"?,"timeoutSec"?}]}. The session file's "server" is a server id. Never print passwords.
-Read-only: only one SELECT / WITH / SHOW / DESCRIBE / EXPLAIN / TABLE / VALUES statement runs at a time, in a read-only session and transaction; anything that writes, locks or changes the session is refused. Don't offer writes or migrations through it.
+Reads (SELECT / WITH / SHOW / DESCRIBE / EXPLAIN / TABLE / VALUES) run one at a time in a read-only session. An INSERT / UPDATE / DELETE you write into the console opens a prompt for the user, who may run it once or unlock that server for their session (never production); you cannot unlock or approve writes yourself, and never edit servers.json to do so. DDL, privileges, LOAD, OUTFILE, CALL, locks and multiple statements are always refused, so don't propose migrations through it. Always include a WHERE clause in UPDATE / DELETE unless the user asked for every row.
 The user runs statements (▶ in the editor gutter or ctrl+r); do not run them yourself unless asked.`
 
 const DEFAULT_SERVERS = {
@@ -117,7 +127,8 @@ const schemaFile = () => `${base}/schema.json`
 const serverKey = (s: { id: string; host: string }) => `${s.id}@${s.host}`
 
 async function resolvePath($: EngineInterface, p: string, under: string): Promise<string> {
-  const home = (await $.env.get('HOME')) ?? ''
+  // HOME on macOS / Linux; USERPROFILE on Windows.
+  const home = (await $.env.get('HOME')) ?? (await $.env.get('USERPROFILE')) ?? ''
   if (p.startsWith('~/')) return home + p.slice(1)
   if (p.startsWith('/')) return p
   return `${under}/${p}`
@@ -254,6 +265,7 @@ async function sync($: EngineInterface) {
   if (!sessionFile) return
   if (await changed($, configFile)) {
     const list = await readServers($)
+    await rememberProduction($, list)
     await update($, servers, () => list.map(s => ({ id: s.id, name: s.name, host: s.host, ...(s.tag ? { tag: s.tag } : {}), databases: s.databases ?? [] })))
     const cur = await read($, server)
     if (list.length && !list.some(s => s.id === cur)) {
@@ -263,6 +275,8 @@ async function sync($: EngineInterface) {
     await pickDatabase($)
   }
   if (await changed($, sessionFile)) {
+    // A prompt answers for the statement it shows; any outside change to the console cancels it.
+    if (await read($, confirm)) await update($, confirm, () => null)
     const st = await readJson($, sessionFile)
     if (st) {
       if (typeof st.query === 'string' && st.query !== (await read($, query))) {
@@ -310,7 +324,8 @@ async function sync($: EngineInterface) {
 }
 
 async function ensureBase($: EngineInterface) {
-  const home = (await $.env.get('HOME')) ?? ''
+  // HOME on macOS / Linux; USERPROFILE on Windows.
+  const home = (await $.env.get('HOME')) ?? (await $.env.get('USERPROFILE')) ?? ''
   base = `${home}/.claude/mods/sql`
   if (!(await $.fs.exists(`${base}/servers.json`))) await $.fs.write(`${base}/servers.json`, JSON.stringify(DEFAULT_SERVERS, null, 2) + '\n')
 }
@@ -370,14 +385,17 @@ async function mysqlBinary($: EngineInterface, s: DbServer): Promise<string> {
 }
 
 // Runs one statement that already passed readGuard. The guard runs again here so no caller can skip it.
-async function runSql($: EngineInterface, creds: DbServer, db: string, sql: string): Promise<{ columns: string[]; rows: string[][]; ms: number; error?: string; limited?: boolean }> {
-  const refused = readGuard(sql)
-  if (refused) return { columns: [], rows: [], ms: 0, error: refused }
+async function runSql($: EngineInterface, creds: DbServer, db: string, sql: string, mode: 'read' | 'write' = 'read'): Promise<{ columns: string[]; rows: string[][]; ms: number; error?: string; limited?: boolean }> {
+  // The guard runs again here so no caller can skip it: reads must pass readGuard, writes must be
+  // a plain INSERT / UPDATE / DELETE that the person approved (mode 'write' only comes from there).
+  const c = classifyStatement(sql)
+  if (mode === 'read' && c.kind !== 'read') return { columns: [], rows: [], ms: 0, error: c.kind === 'refused' ? c.reason : readGuard(sql)! }
+  if (mode === 'write' && c.kind !== 'write') return { columns: [], rows: [], ms: 0, error: c.kind === 'refused' ? c.reason : 'Not sent: not a write.' }
   if (!creds.host) return { columns: [], rows: [], ms: 0, error: `Server "${creds.name}" has no host. Fill it in ${configFile}.` }
   const started = Date.now()
   const { argv, env } = mysqlInvocation(creds, db || undefined, await mysqlBinary($, creds))
   try {
-    const out = await $.process.run(argv, { stdin: mysqlScript(sql, creds), env, timeoutMs: ((creds.timeoutSec ?? 60) + 15) * 1000 })
+    const out = await $.process.run(argv, { stdin: mode === 'write' ? mysqlWriteScript(sql) : mysqlScript(sql, creds), env, timeoutMs: ((creds.timeoutSec ?? 60) + 15) * 1000 })
     const ms = Date.now() - started
     const stderr = out.stderr
       .split('\n')
@@ -392,6 +410,29 @@ async function runSql($: EngineInterface, creds: DbServer, db: string, sql: stri
   }
 }
 
+async function isProduction($: EngineInterface, s: DbServer): Promise<boolean> {
+  const seen = [...((await read($, prodSeen)) ?? []), ...(((await $.store.get('prodSeen')) as string[] | undefined) ?? [])]
+  return s.tag === 'production' || seen.includes(`id:${s.id}`) || seen.includes(`host:${s.host}:${s.port ?? 3306}`)
+}
+
+async function rememberProduction($: EngineInterface, list: DbServer[]) {
+  const marks = list.filter(s => s.tag === 'production').flatMap(s => [`id:${s.id}`, `host:${s.host}:${s.port ?? 3306}`])
+  if (!marks.length) return
+  await update($, prodSeen, seen => [...new Set([...(seen ?? []), ...marks])])
+  const kept = ((await $.store.get('prodSeen')) as string[] | undefined) ?? []
+  const next = [...new Set([...kept, ...marks])]
+  if (next.length !== kept.length) await $.store.set('prodSeen', next.slice(-20000))
+}
+
+// A session unlock counts only for the server entry it was given to, unchanged, and never on production.
+async function isUnlockedNow($: EngineInterface, s: DbServer): Promise<boolean> {
+  if (await isProduction($, s)) return false
+  const fp = credentialFingerprint(s)
+  return ((await read($, unlocked)) ?? []).some(u => u.id === s.id && u.fingerprint === fp)
+}
+
+const targetLabel = (s: DbServer) => `${s.host}:${s.port ?? 3306}${s.https ? ' (TLS)' : ''}`
+
 async function run($: EngineInterface) {
   if (await read($, running)) return
   const text = await read($, query)
@@ -401,29 +442,52 @@ async function run($: EngineInterface) {
   const db = await read($, database)
   const target = (await readServers($)).find(s => s.id === name)
   if (!target) return $.ui.toast(`No server "${name}" in ${configFile}`)
-  if (!(await isTrusted($, target))) {
-    await update($, confirm, () => ({ serverId: target.id, serverName: target.name, target: `${target.host}:${target.port ?? 3306}${target.https ? ' (TLS)' : ''}`, source: credentialSource(target)!, fingerprint: credentialFingerprint(target), then: 'run' as const, sql: stmt.sql, database: db }))
+  const c = classifyStatement(stmt.sql)
+  if (c.kind === 'refused') return record($, target, db, stmt.sql, { columns: [], rows: [], ms: 0, error: c.reason })
+  if (c.kind === 'write' && !(await isUnlockedNow($, target))) {
+    // Writes are locked: the person approves this exact statement, or unlocks the server for the session.
+    await update($, menuOpen, () => '')
+    const prompt: SqlWritePrompt = {
+      kind: 'write', serverId: target.id, serverName: target.name, target: targetLabel(target), fingerprint: credentialFingerprint(target),
+      database: db, sql: stmt.sql, verb: c.verb, noWhere: c.noWhere, production: await isProduction($, target), shownFrom: 0,
+    }
+    await update($, confirm, () => prompt)
     return
   }
-  await runStatement($, target, db, stmt.sql)
+  await sendStatement($, target, db, stmt.sql, c.kind === 'write' ? 'write' : 'read')
+}
+
+// Runs exactly this statement: the server entry must be unchanged and its credentials approved.
+async function sendStatement($: EngineInterface, target: DbServer, db: string, sql: string, mode: 'read' | 'write', fingerprint?: string) {
+  if (fingerprint && credentialFingerprint(target) !== fingerprint) return $.ui.toast(`Not run: server "${target.name}" changed in ${configFile}. Run it again.`)
+  if (!(await isTrusted($, target))) {
+    await update($, confirm, () => ({ kind: 'trust' as const, serverId: target.id, serverName: target.name, target: targetLabel(target), source: credentialSource(target)!, fingerprint: credentialFingerprint(target), then: 'run' as const, sql, database: db, mode }))
+    return
+  }
+  await runStatement($, target, db, sql, mode)
 }
 
 // Runs one statement on a trusted server and records the result. The guard runs again in runSql.
-async function runStatement($: EngineInterface, target: DbServer, db: string, sql: string) {
+async function runStatement($: EngineInterface, target: DbServer, db: string, sql: string, mode: 'read' | 'write' = 'read') {
   const name = target.id
   const stmt = { sql }
   await update($, running, () => true)
   const out = await withPassword($, target)
-    .then(creds => runSql($, creds, db, stmt.sql))
+    .then(creds => runSql($, creds, db, stmt.sql, mode))
     .catch(err => ({ columns: [] as string[], rows: [] as string[][], ms: 0, error: String(err) }))
-  const next: SqlResult = { id: Date.now(), server: target.name, database: db, sql: stmt.sql, ...out, at: new Date().toISOString() }
+  await record($, target, db, stmt.sql, out)
+}
+
+async function record($: EngineInterface, target: DbServer, db: string, sql: string, out: { columns: string[]; rows: string[][]; ms: number; error?: string; limited?: boolean }) {
+  const name = target.id
+  const next: SqlResult = { id: Date.now(), server: target.name, database: db, sql, ...out, at: new Date().toISOString() }
   await update($, result, () => next)
   await update($, view, v => ({ ...EMPTY_VIEW, search: v?.search ?? '' }))
   await update($, running, () => false)
   const { id: _i, ...file } = next
   await write($, resultFile(), JSON.stringify({ ...file, rowCount: next.rows.length }, null, 2) + '\n')
   await saveSession($, { lastRun: { server: name, database: db, ms: next.ms, rows: next.rows.length, ...(next.error ? { error: next.error.slice(0, 500) } : {}), at: next.at } })
-  if (next.error) $.ui.toast(next.error.startsWith('Read-only') ? 'Blocked: read-only console' : `SQL: ${next.error.slice(0, 160)}`)
+  if (next.error) $.ui.toast(next.error.startsWith('Read-only') || next.error.startsWith('Not sent') ? 'Not sent: see the result pane' : `SQL: ${next.error.slice(0, 160)}`)
 }
 
 // Reads table and column names for the server's databases into schema.json (SELECT only).
@@ -432,7 +496,7 @@ async function refreshSchema($: EngineInterface, name: string) {
   const target = (await readServers($)).find(s => s.id === name)
   if (!target || !target.host) return
   if (!(await isTrusted($, target))) {
-    await update($, confirm, () => ({ serverId: target.id, serverName: target.name, target: `${target.host}:${target.port ?? 3306}${target.https ? ' (TLS)' : ''}`, source: credentialSource(target)!, fingerprint: credentialFingerprint(target), then: 'schema' as const, sql: '', database: '' }))
+    await update($, confirm, () => ({ kind: 'trust' as const, serverId: target.id, serverName: target.name, target: targetLabel(target), source: credentialSource(target)!, fingerprint: credentialFingerprint(target), then: 'schema' as const, sql: '', database: '', mode: 'read' as const }))
     return
   }
   await update($, schemaLoading, () => name)
@@ -572,7 +636,7 @@ export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.command.register({
       name: 'sql',
-      description: 'Toggle the read-only SQL console pane',
+      description: 'Toggle the SQL console pane (writes locked by default)',
       argumentHint: '[--filepath <session>.json] [--configfilepath <servers>.json]',
     })
     await $.tool.register({
@@ -727,12 +791,26 @@ export const register: Register = on => {
     const loading = (await read($, schemaLoading)) === current
     const sc = target ? ((await read($, schema)) ?? {})[serverKey(target)] : undefined
     const cols = (e.props as any).bodyColumns ?? 100
-    const isProd = target?.tag === 'production'
+    const targetFull = target ? (await readServers($)).find(x => x.id === target.id) : undefined
+    const isProd = !!targetFull && (await isProduction($, targetFull))
+    const isUnlocked = !!targetFull && (await isUnlockedNow($, targetFull))
+    const isWritePrompt = ask?.kind === 'write'
+    // A write prompt takes the whole pane. It draws ASCII only, counts every row from the pane's
+    // real size, and shows the statement forward from the furthest point already shown; the run
+    // buttons appear only once its end has been on screen.
+    const promptWidth = Math.max(10, cols - 4)
+    const sqlView = ask?.kind === 'write' ? asciiView(ask.sql) : ''
+    const chrome = 8 + (ask?.kind === 'write' && ask.noWhere ? 1 : 0)
+    const pageSize = rows - chrome
+    const tooLong = sqlView.length > SQL_LIMIT
+    const tooSmall = isWritePrompt && pageSize < 3
+    const shown = ask?.kind === 'write' && !tooLong && !tooSmall ? pageFrom(sqlView, ask.shownFrom, promptWidth, pageSize) : { rows: [] as string[], end: sqlView.length }
+    const sqlSeen = isWritePrompt && !tooLong && !tooSmall && shown.end >= sqlView.length
     const dbList = target ? (target.databases.length ? target.databases : sc?.dbs ?? []) : []
 
     const fixed = 11
     // An open menu sits under the toolbar; the editor gives up its rows.
-    const menuRows = (menu === 'server' ? Math.max(1, list.length) + 2 : menu === 'db' ? Math.max(1, dbList.length) + 2 : 0) + (ask ? 6 : 0)
+    const menuRows = (menu === 'server' ? Math.max(1, list.length) + 2 : menu === 'db' ? Math.max(1, dbList.length) + 2 : 0) + (ask?.kind === 'trust' ? 6 : 0)
     const editorHeight = Math.max(3, Math.floor((rows - fixed) * 0.4) - menuRows)
     viewerHeight = Math.max(4, rows - fixed - editorHeight)
     viewerWidth = Math.max(20, cols - 4)
@@ -771,8 +849,21 @@ export const register: Register = on => {
     return (
       <Box flexDirection="column">
         <Box flexDirection="row" gap={1} height={1}>
-          <Button key="server-menu" label={`▾ ${target ? target.name : 'Choose server'}`} variant="primary" onPress={() => void update($, menuOpen, m => (m === 'server' ? '' : 'server'))} />
-          <Button key="db-menu" label={`▾ ${db || 'Database'}`} onPress={() => void update($, menuOpen, m => (m === 'db' ? '' : 'db'))} />
+          <Button key="server-menu" label={`▾ ${target ? target.name : 'Choose server'}`} variant="primary" onPress={() => void (isWritePrompt ? $.ui.toast('Finish or cancel the write prompt first.') : update($, menuOpen, m => (m === 'server' ? '' : 'server')))} />
+          <Button key="db-menu" label={`▾ ${db || 'Database'}`} onPress={() => void (isWritePrompt ? $.ui.toast('Finish or cancel the write prompt first.') : update($, menuOpen, m => (m === 'db' ? '' : 'db')))} />
+          <Button
+            key="lock"
+            label={isUnlocked ? '🔓 writes on' : '🔒 writes locked'}
+            onPress={() =>
+              void (async () => {
+                if (!targetFull) return
+                if (isUnlocked) {
+                  await update($, unlocked, l => (l ?? []).filter(u => u.id !== targetFull.id))
+                  $.ui.toast(`${targetFull.name}: writes locked`)
+                } else $.ui.toast('Writes unlock from the prompt an INSERT, UPDATE or DELETE opens, one statement or one session at a time.')
+              })().catch(() => undefined)
+            }
+          />
           <Button key="undo" label="↶" onPress={() => void update($, editorCmd, () => ({ id: Date.now(), cmd: 'undo' }))} />
           <Button key="redo" label="↷" onPress={() => void update($, editorCmd, () => ({ id: Date.now(), cmd: 'redo' }))} />
           <Text dimColor>│</Text>
@@ -793,11 +884,11 @@ export const register: Register = on => {
         <Text wrap="truncate-end">
           <Text dimColor>{firstLine} → </Text>
           <Text color={tagColor(target?.tag)} bold={isProd ? true : undefined}>
-            {target ? `${target.name}/${db || '(no database)'}${target.tag ? ` · ${target.tag}` : ''}${isProd ? ', read-only' : ''}` : '(no server)'}
+            {target ? `${target.name}/${db || '(no database)'}${target.tag ? ` · ${target.tag}` : ''}${isUnlocked ? ' · writes on' : ''}` : '(no server)'}
           </Text>
           {target && !target.host ? <Text color="warning">{` · fill in host and user in ${configFile}`}</Text> : null}
         </Text>
-        {ask ? (
+        {ask?.kind === 'trust' ? (
           <Box flexDirection="column" borderStyle="round" borderColor="#d7a700" backgroundColor="#1e1e1e" paddingX={1}>
             <Text bold color="warning" wrap="truncate-end">{`Connect to ${asciiView(ask.serverName)} with these credentials?`}</Text>
             <Text wrap="wrap">{asciiView(`${ask.target} gets ${ask.source}.`)}</Text>
@@ -810,11 +901,12 @@ export const register: Register = on => {
                 onPress={() =>
                   void (async () => {
                     const a = ask
+                    if (a.kind !== 'trust') return
                     await update($, confirm, () => null)
                     const target = (await readServers($)).find(s => s.id === a.serverId)
                     if (!target || credentialFingerprint(target) !== a.fingerprint) return $.ui.toast(`Not run: server "${a.serverName}" changed. Run it again.`)
                     await trust($, a.fingerprint)
-                    if (a.then === 'run') await runStatement($, target, a.database, a.sql)
+                    if (a.then === 'run') await runStatement($, target, a.database, a.sql, a.mode)
                     else await refreshSchema($, a.serverId)
                   })().catch(() => undefined)
                 }
@@ -823,7 +915,77 @@ export const register: Register = on => {
             </Box>
           </Box>
         ) : null}
-        {menu === 'server' ? (
+        {ask?.kind === 'write' ? (
+          <Box flexDirection="column" borderStyle="round" borderColor="#f14c4c" backgroundColor="#1e1e1e" paddingX={1}>
+            <Text bold color="error" wrap="truncate-end">{`Writes are locked for ${asciiView(ask.serverName)}`}</Text>
+            <Text wrap="truncate-end">{asciiView(`${ask.verb} on ${ask.target} / ${ask.database || '(no database)'}${ask.production ? ' · production' : ''}`)}</Text>
+            {ask.noWhere ? <Text bold color="error" wrap="truncate-end">{`No WHERE clause: this ${ask.verb === 'DELETE' ? 'deletes' : 'changes'} every row of the table.`}</Text> : null}
+            {tooLong ? (
+              <Text color="error" wrap="truncate-end">{`statement: ${sqlView.length} characters, too long to review here, so it can't be run from the console.`}</Text>
+            ) : tooSmall ? (
+              <Text color="error" wrap="truncate-end">Make the pane taller to review this statement.</Text>
+            ) : (
+              <Box flexDirection="column">
+                <Text dimColor wrap="truncate-end">{`statement as sent (${sqlView.length} characters, shown up to ${Math.floor((shown.end / Math.max(1, sqlView.length)) * 100)}%):`}</Text>
+                {shown.rows.map(l => (
+                  <Text wrap="truncate-end">{l || ' '}</Text>
+                ))}
+              </Box>
+            )}
+            <Text dimColor wrap="truncate-end">{sqlSeen ? 'Run sends exactly this statement, in one transaction.' : tooLong ? 'Cancel, and split it into smaller statements.' : tooSmall ? 'Enlarge the pane, or cancel.' : 'Read the whole statement before you can run it.'}</Text>
+            <Box flexDirection="row" gap={2} height={1}>
+              {!sqlSeen && !tooLong && !tooSmall ? (
+                <Button
+                  key="sql-next"
+                  label="Next page"
+                  variant="primary"
+                  onPress={() => {
+                    // Moves on from what this drawing showed; a stale press (another prompt by now) does nothing.
+                    const same = JSON.stringify({ ...ask, shownFrom: 0 })
+                    const from = ask.shownFrom
+                    const to = shown.end
+                    void update($, confirm, c => (c && c.kind === 'write' && JSON.stringify({ ...c, shownFrom: 0 }) === same && c.shownFrom === from ? { ...c, shownFrom: to } : c))
+                  }}
+                />
+              ) : null}
+              {sqlSeen ? (
+                <Button
+                  key="write-once"
+                  label="Run this statement once"
+                  variant="primary"
+                  onPress={() =>
+                    void (async () => {
+                      const a = ask
+                      await update($, confirm, () => null)
+                      const t = (await readServers($)).find(x => x.id === a.serverId)
+                      if (!t) return $.ui.toast(`Not run: server "${a.serverName}" is gone from ${configFile}.`)
+                      await sendStatement($, t, a.database, a.sql, 'write', a.fingerprint)
+                    })().catch(() => undefined)
+                  }
+                />
+              ) : null}
+              {sqlSeen && !ask.production ? (
+                <Button
+                  key="write-session"
+                  label="Unlock for this session"
+                  onPress={() =>
+                    void (async () => {
+                      const a = ask
+                      await update($, confirm, () => null)
+                      const t = (await readServers($)).find(x => x.id === a.serverId)
+                      if (!t || credentialFingerprint(t) !== a.fingerprint) return $.ui.toast(`Not run: server "${a.serverName}" changed in ${configFile}. Run it again.`)
+                      await update($, unlocked, l => [...(l ?? []).filter(u => u.id !== a.serverId), { id: a.serverId, fingerprint: a.fingerprint } as SqlUnlock])
+                      $.ui.toast(`${a.serverName}: writes unlocked until this session ends (🔓 locks again)`)
+                      await sendStatement($, t, a.database, a.sql, 'write', a.fingerprint)
+                    })().catch(() => undefined)
+                  }
+                />
+              ) : null}
+              <Button key="write-cancel" label="Cancel" onPress={() => void update($, confirm, () => null)} />
+            </Box>
+          </Box>
+        ) : null}
+        {menu === 'server' && !isWritePrompt ? (
           <Box flexDirection="column" borderStyle="round" borderColor="#4ec9b0" backgroundColor="#1e1e1e" paddingX={1}>
             {list.length === 0 && <Text color="error">no servers in {configFile}</Text>}
             {list.map(sv => (
@@ -849,7 +1011,7 @@ export const register: Register = on => {
             ))}
           </Box>
         ) : null}
-        {menu === 'db' ? (
+        {menu === 'db' && !isWritePrompt ? (
           <Box flexDirection="column" borderStyle="round" borderColor="#4ec9b0" backgroundColor="#1e1e1e" paddingX={1}>
             {dbList.length === 0 && <Text dimColor>No databases yet: press ↻ Schema, or list them under "databases" in servers.json</Text>}
             {dbList.map(d => (
@@ -868,6 +1030,7 @@ export const register: Register = on => {
             ))}
           </Box>
         ) : null}
+        {isWritePrompt ? null : (<>
         <Client
           key="editor"
           module="./editor.tsx"
@@ -906,6 +1069,7 @@ export const register: Register = on => {
         ) : (
           <Client key="viewer" module="./viewer.tsx" width="100%" height={viewerHeight + 1} props={viewerProps} />
         )}
+        </>)}
       </Box>
     )
   })

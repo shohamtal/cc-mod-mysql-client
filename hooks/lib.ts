@@ -126,9 +126,10 @@ const CLIENT_COMMANDS = new Set([
   'QUERY_ATTRIBUTES', 'SSL_SESSION_DATA_PRINT',
 ])
 
-// Why the statement is refused, or undefined when it only reads.
-export function readGuard(sql: string): string | undefined {
-  const refuse = (why: string) => `Read-only console: not sent, ${why}.`
+// What the guard reads: the statement's words (uppercased, strings and comments removed),
+// or why its shape alone is refused. Every statement passes this, read or write.
+function structure(sql: string): { words: string[]; body: string } | { refused: string } {
+  const refuse = (why: string) => ({ refused: `Not sent: ${why}.` })
   const sk = skeleton(sql)
   if (sk === undefined) return refuse('a string, quoted name or comment is never closed')
   if (sk.includes('/*!')) return refuse('`/*! … */` comments are run by MySQL')
@@ -141,6 +142,15 @@ export function readGuard(sql: string): string | undefined {
   }
   // `CHARACTER SET x` / `CHARSET x` name an encoding; they write nothing.
   const words = (body.replace(/\bCHARACTER\s+SET\b/gi, ' ').match(/[A-Za-z_][A-Za-z0-9_$]*/g) ?? []).map(w => w.toUpperCase())
+  return { words, body }
+}
+
+// Why the statement is refused, or undefined when it only reads.
+export function readGuard(sql: string): string | undefined {
+  const refuse = (why: string) => `Read-only console: not sent, ${why}.`
+  const st = structure(sql)
+  if ('refused' in st) return `Read-only console: ${st.refused.charAt(0).toLowerCase()}${st.refused.slice(1)}`
+  const { words, body } = st
   const lead = body.trimStart()
   const first = lead.startsWith('(') ? 'SELECT' : words[0]
   if (!first || !FIRST.has(first)) {
@@ -153,6 +163,30 @@ export function readGuard(sql: string): string | undefined {
     if (WRITE_WORDS.has(w)) return refuse(`it uses ${w}, which can write, lock or change the session`)
   }
   return undefined
+}
+
+// The writes the console can run once the person unlocks them: one INSERT, UPDATE or DELETE.
+// Everything else that changes something (DDL, privileges, LOAD, OUTFILE, CALL, locks,
+// transactions, session settings) stays refused, unlocked or not.
+const WRITE_VERBS = new Set(['INSERT', 'UPDATE', 'DELETE'])
+const ALLOWED_IN_WRITE = new Set(['INSERT', 'UPDATE', 'DELETE', 'INTO', 'SET'])
+
+export type Classified =
+  | { kind: 'read' }
+  | { kind: 'write'; verb: 'INSERT' | 'UPDATE' | 'DELETE'; noWhere: boolean }
+  | { kind: 'refused'; reason: string }
+
+export function classifyStatement(sql: string): Classified {
+  if (!readGuard(sql)) return { kind: 'read' }
+  const st = structure(sql)
+  if ('refused' in st) return { kind: 'refused', reason: st.refused }
+  const { words } = st
+  const verb = words[0]
+  if (!verb || !WRITE_VERBS.has(verb)) return { kind: 'refused', reason: readGuard(sql)! }
+  for (const w of words) {
+    if (WRITE_WORDS.has(w) && !ALLOWED_IN_WRITE.has(w)) return { kind: 'refused', reason: `Not sent: it uses ${w}. The console runs only plain INSERT, UPDATE and DELETE, never ${w}.` }
+  }
+  return { kind: 'write', verb: verb as 'INSERT' | 'UPDATE' | 'DELETE', noWhere: verb !== 'INSERT' && !words.includes('WHERE') }
 }
 
 // ---- running ----
@@ -228,6 +262,20 @@ export function mysqlScript(sql: string, server: DbServer): string {
     'START TRANSACTION READ ONLY;',
     sql.replace(/[\s;]+$/, '') + ';',
     'ROLLBACK;',
+    '',
+  ].join('\n')
+}
+
+// The script for a write the person approved: the same pinned sql_mode, one transaction, and the
+// number of rows it changed. If the statement fails, mysql stops before COMMIT and the server
+// rolls the transaction back when the connection closes.
+export function mysqlWriteScript(sql: string): string {
+  return [
+    "SET SESSION sql_mode = REPLACE(REPLACE(@@SESSION.sql_mode, 'NO_BACKSLASH_ESCAPES', ''), 'ANSI_QUOTES', '');",
+    'START TRANSACTION;',
+    sql.replace(/[\s;]+$/, '') + ';',
+    'SELECT ROW_COUNT() AS affected_rows;',
+    'COMMIT;',
     '',
   ].join('\n')
 }
@@ -432,3 +480,31 @@ export function credentialFingerprint(s: DbServer): string {
 
 // Text as a prompt draws it: printable ASCII and newlines only, anything else as \\uXXXX.
 export const asciiView = (t: string) => t.replace(/[^\x20-\x7e\n]/g, c => '\\u' + c.charCodeAt(0).toString(16).padStart(4, '0'))
+
+// The rows a text takes at a width: its lines, each cut into width-long pieces.
+export function wrapRows(text: string, width: number): string[] {
+  const w = Math.max(10, width)
+  const out: string[] = []
+  for (const line of text.split('\n')) {
+    if (!line) out.push('')
+    for (let i = 0; i < line.length; i += w) out.push(line.slice(i, i + w))
+  }
+  return out
+}
+
+// From offset `from` in an ASCII text, the rows that fit `height` rows of `width` columns, and the
+// offset just after the last character shown. Reading moves only forward, one shown page at a time.
+export function pageFrom(text: string, from: number, width: number, height: number): { rows: string[]; end: number } {
+  const w = Math.max(10, width)
+  const rows: string[] = []
+  let i = Math.max(0, from)
+  while (rows.length < height && i < text.length) {
+    const nl = text.indexOf('\n', i)
+    const lineEnd = nl < 0 ? text.length : nl
+    const piece = text.slice(i, Math.min(lineEnd, i + w))
+    rows.push(piece)
+    i += piece.length
+    if (i === lineEnd && nl >= 0) i++
+  }
+  return { rows, end: i }
+}
