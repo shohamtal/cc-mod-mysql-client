@@ -4,8 +4,8 @@ A **MySQL client and SQL editor** in a side pane of the Claude Code terminal, li
 
 ![Claude writes a query into the SQL console](docs/claude-writes-query.png)
 
-- **SQL editor:** SQL colors, a ▶ next to every statement, and schema-aware autocomplete for keywords, databases, tables (after `FROM`/`JOIN`, `db.`) and columns (in `SELECT`/`WHERE`/`ON`/`BY`, `alias.`). Also selection, copy / cut / paste, undo / redo and keyword formatting.
-- **Query results:** a table you scroll in both directions. Open a row to see it as `column: value` lines. Find highlights matches; copy as TSV or JSON.
+- **SQL editor:** SQL colors, a ▶ next to every statement, and schema-aware autocomplete for keywords, databases, tables (after `FROM`/`JOIN`, `db.`) and columns (in `SELECT`/`WHERE`/`ON`/`BY`, `alias.`). Also selection (a mouse selection copies itself to the clipboard), copy / cut / paste, undo / redo and keyword formatting.
+- **Query results:** a table you scroll in both directions (wheel up and down; drag sideways or ← → for columns). Open a row to see it as `column: value` lines. Find highlights matches; copy as TSV or JSON.
 - **Servers and databases:** any number of MySQL servers in a **▾ menu**, each with its own databases, tagged production / staging / development / local (production is red). Passwords come from the file, an environment variable or a command.
 - **Separate consoles:** each session or agent gets its own console file (`/sql --filepath x.json --configfilepath y.json`), and the `mcp__mysql-client__console` tool tells the model how to use it.
 

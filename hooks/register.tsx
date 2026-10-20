@@ -25,6 +25,7 @@ import {
   normalizeServer,
   tagColor,
   PASTE_COMMANDS,
+  COPY_COMMANDS,
   credentialSource,
   credentialFingerprint,
   asciiView,
@@ -75,6 +76,8 @@ const HELP = `**Top bar**
 
 **Result** (click it first)
 - Mouse wheel scrolls the editor or the result (whichever is under the pointer)
+- Drag the result left or right to scroll its columns (terminals don't pass a sideways swipe to the pane), or use ← →
+- Selecting text with the mouse copies it; Cmd+C belongs to the terminal and never reaches the pane (ctrl+c copies the selection or line)
 - \`↑↓\` / \`j k\` move · PgUp/PgDn · \`g\`/\`G\` · \`←\`/\`→\` (or \`h\`/\`l\`) scroll columns, shift for faster
 - Enter / Space / click — open a row as column: value lines · \`e\` open all · \`c\` close all
 - \`y\` copy as TSV · \`J\` copy as JSON · \`/\` or \`ctrl+f\` find · \`n\`/\`N\` next/previous
@@ -116,6 +119,16 @@ let matchCache: { key: string; paths: string[] } | undefined
 const resultFile = () => sessionFile.replace(/(\.json)?$/, '.result.json')
 const schemaFile = () => `${base}/schema.json`
 const serverKey = (s: { id: string; host: string }) => `${s.id}@${s.host}`
+
+// The system clipboard first (pbcopy, wl-copy, xclip, clip.exe): the terminal's own route (OSC 52)
+// is off by default in iTerm2 and missing in Terminal.app, where it reports success and copies nothing.
+async function copyText($: EngineInterface, text: string): Promise<boolean> {
+  for (const argv of COPY_COMMANDS) {
+    const out = await $.process.run(argv, { stdin: text, timeoutMs: 5_000 }).catch(() => undefined)
+    if (out && out.exitCode === 0) return true
+  }
+  return (await $.ui.copy({ text })).isCopied
+}
 
 async function resolvePath($: EngineInterface, p: string, under: string): Promise<string> {
   // HOME on macOS / Linux; USERPROFILE on Windows.
@@ -565,7 +578,7 @@ async function viewerKey($: EngineInterface, key: string, ctrl: boolean, meta: b
     const r = await read($, result)
     if (!r) return
     const text = key === 'y' ? toTsv(r.columns, r.rows) : JSON.stringify(r.rows.map(row => Object.fromEntries(r.columns.map((c, i) => [c, row[i] === 'NULL' ? null : row[i]]))), null, 2)
-    const copied = await $.ui.copy({ text })
+    const copied = { isCopied: await copyText($, text) }
     $.ui.toast(copied.isCopied ? `Copied ${r.rows.length} rows as ${key === 'y' ? 'TSV' : 'JSON'}` : 'Copy failed')
     return
   }
@@ -722,8 +735,8 @@ export const register: Register = on => {
       if (typeof data.text === 'string') await update($, query, () => data.text)
       if (typeof data.row === 'number') await update($, cursorRow, () => data.row)
       if (data.type === 'copy') {
-        const copied = await $.ui.copy({ text: String(data.copy ?? '') })
-        $.ui.toast(copied.isCopied ? 'Copied' : 'Copy failed')
+        const n = String(data.copy ?? '')
+        $.ui.toast((await copyText($, n)) ? (data.auto ? `Copied ${n.length} characters` : 'Copied') : 'Copy failed')
       } else if (data.type === 'paste') {
         for (const argv of PASTE_COMMANDS) {
           const out = await $.process.run(argv).catch(() => undefined)
@@ -752,6 +765,9 @@ export const register: Register = on => {
           const expanded = v.expanded.includes(row) ? v.expanded.filter(x => x !== row) : [...v.expanded, row]
           return { ...v, expanded, cursor: idx }
         })
+      } else if (data.type === 'pan') {
+        const by = Number(data.by)
+        if (Number.isFinite(by)) await editView($, v => ({ ...v, left: Math.max(0, v.left + Math.round(by)) }))
       } else if (data.type === 'key') {
         await viewerKey($, String(data.key), !!data.ctrl, !!data.meta, !!data.shift)
       }

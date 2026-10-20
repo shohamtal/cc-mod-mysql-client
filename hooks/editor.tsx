@@ -438,7 +438,11 @@ const Editor: ClientModule<Props, State> = (props, surface) => {
       const pos = toPos()
       if (pos.row !== st.row || pos.col !== st.col) commit({ ...st, ...pos }, 'cursor')
     } else if (ev.type === 'up' && st.dragging) {
-      commit({ ...st, ...toPos(), dragging: false }, 'cursor')
+      const next = { ...st, ...toPos(), dragging: false }
+      commit(next, 'cursor')
+      // Cmd+C belongs to the terminal and never reaches the pane, so a mouse selection copies itself.
+      const picked = selectedText(next)
+      if (picked) surface.post({ type: 'copy', copy: picked, auto: true, text: next.lines.join('\n'), row: next.row })
     }
   })
 

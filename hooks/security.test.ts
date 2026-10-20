@@ -209,3 +209,29 @@ test('mysql reads only the mod option file, never ~/.my.cnf', async () => {
   expect(argv[2]).toContain('"$SQLC_MYSQL" --defaults-file=<(')
   expect(argv[2]).not.toContain('defaults-extra-file')
 })
+
+describe('clipboard and panning', () => {
+  test('a copy goes to the system clipboard command, with the text on stdin', async ($, on) => {
+    const w = world(on, [{ id: 'local', name: 'Local', host: 'localhost', databases: ['app'] }])
+    await $.tool.call({ tool: TOOL, action: 'status', filepath: 'c1.json' } as any)
+    const ui: any = await $.ui.mount(PANE)
+    await ui.post({ type: 'copy', copy: 'SELECT 42', auto: true, text: 'SELECT 42', row: 0 }, { in: 'editor' })
+    expect(w.runs.map(r => r.argv)).toEqual([['pbcopy']])
+    expect(w.runs[0]!.stdin).toBe('SELECT 42')
+    expect(w.mysql()).toEqual([])
+  })
+
+  test('dragging the result sideways pans its columns, never past the left edge', async ($, on) => {
+    world(on, [{ id: 'local', name: 'Local', host: 'localhost', databases: ['app'] }])
+    await $.tool.call({ tool: TOOL, action: 'status', filepath: 'c2.json' } as any)
+    const ui: any = await $.ui.mount(PANE)
+    await ui.post({ type: 'run', text: 'SELECT 1 AS abcdefgh', row: 0 }, { in: 'editor' })
+    const lines = async () => JSON.stringify((await ui.find({ key: 'viewer' }))?.props?.props?.lines)
+    const before = await lines()
+    expect(before).toContain('"x"')
+    await ui.post({ type: 'pan', by: 2 }, { in: 'viewer' })
+    expect(await lines()).not.toBe(before)
+    await ui.post({ type: 'pan', by: -50 }, { in: 'viewer' })
+    expect(await lines()).toBe(before)
+  })
+})
