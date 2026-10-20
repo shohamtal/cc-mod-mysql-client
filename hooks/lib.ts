@@ -246,7 +246,9 @@ export function mysqlInvocation(server: DbServer, database: string | undefined, 
   if (server.username) args.push(`--user=${server.username}`)
   if (database) args.push(`--database=${database}`)
   if (server.https) args.push('--ssl-mode=REQUIRED')
-  const script = 'exec "$SQLC_MYSQL" --defaults-extra-file=<(printf \'[client]\\npassword=%s\\n\' "$SQLC_PW") "$@"'
+  // --defaults-file (first): mysql reads only this option file, never ~/.my.cnf or /etc/my.cnf,
+  // where a pager, tee file or init-command could be planted.
+  const script = 'exec "$SQLC_MYSQL" --defaults-file=<(printf \'[client]\\npassword=%s\\n\' "$SQLC_PW") "$@"'
   return {
     argv: ['/bin/bash', '-c', script, 'sqlc', ...args],
     env: { SQLC_MYSQL: mysql, SQLC_PW: cnfQuote(server.password ?? '') },
@@ -405,4 +407,17 @@ export function parseArgs(args: string): { file?: string; config?: string; rest:
     else out.config = value
   }
   return out
+}
+
+// Servers that send credentials need the person's OK before the first query: the address and
+// where the password comes from, so a changed config (an agent can write it) never sends a secret
+// somewhere new, or runs a password command, on its own.
+export function credentialSource(s: DbServer): string | undefined {
+  if (!s.username) return undefined
+  const from = s.passwordCommand ? `password from the command \`${s.passwordCommand.join(' ')}\`` : s.passwordEnv ? `password from $${s.passwordEnv}` : s.password ? 'password from servers.json' : 'no password'
+  return `user ${s.username}, ${from}`
+}
+
+export function credentialFingerprint(s: DbServer): string {
+  return JSON.stringify([s.host, s.port ?? 3306, s.https ?? false, s.username ?? '', s.passwordCommand ?? null, s.passwordEnv ?? null, s.password ? 'file' : null, s.mysqlPath ?? null])
 }

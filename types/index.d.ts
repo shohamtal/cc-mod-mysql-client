@@ -44,6 +44,7 @@ declare module 'claude-code' {
       editorScroll: { id: number; by: number } | null
       menuOpen: string
       editorCmd: { id: number; cmd: 'undo' | 'redo' } | null
+      confirm: { serverId: string; serverName: string; target: string; source: string; fingerprint: string; then: 'run' | 'schema'; sql: string; database: string } | null
     }
   }
 }

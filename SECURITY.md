@@ -19,9 +19,14 @@
      - `/*! */` executable comments
      - mysql client commands
   2. **Read-only session:** every statement runs inside `SET SESSION TRANSACTION READ ONLY` and `START TRANSACTION READ ONLY … ROLLBACK`.
-  3. **Client:** `mysql` runs with `--skip-system-command`.
+  3. **Client:** `mysql` runs with `--skip-system-command` and `--defaults-file` (its own option file only, never `~/.my.cnf`). The session `sql_mode` drops `NO_BACKSLASH_ESCAPES` and `ANSI_QUOTES`.
+- **Credentials ask first:** a server with a user needs the person's OK once before its first query, keyed to its host and credential source; a `passwordCommand` never runs before that.
 
 Use a read-only database user anyway.
+
+## Hardening
+
+Deny agent edits to `~/.claude/mods/sql/servers.json`, `~/.claude/plugins/store/**` and `~/.my.cnf` in your Claude Code permissions; the README shows the rule.
 
 ## Reporting a vulnerability
 

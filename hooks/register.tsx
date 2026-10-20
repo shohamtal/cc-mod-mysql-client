@@ -25,6 +25,8 @@ import {
   normalizeServer,
   tagColor,
   PASTE_COMMANDS,
+  credentialSource,
+  credentialFingerprint,
 } from './lib'
 
 const PANE = 'sql'
@@ -46,6 +48,7 @@ const EMPTY_VIEW: SqlView = { expanded: [], top: 0, cursor: 0, left: 0, search: 
 const view = atom({ plugin: 'sql-console', key: 'view' } as const, EMPTY_VIEW)
 const menuOpen = atom({ plugin: 'sql-console', key: 'menuOpen' } as const, '')
 const editorCmd = atom({ plugin: 'sql-console', key: 'editorCmd' } as const, null)
+const confirm = atom({ plugin: 'sql-console', key: 'confirm' } as const, null)
 
 const HELP = `**Top bar**
 - **▾ Server** / **▾ Database** — open the list and pick one (from \`servers.json\`; ● is active; production is red) · **↶ ↷** undo / redo
@@ -151,6 +154,18 @@ async function passwordOf($: EngineInterface, s: DbServer): Promise<string> {
     return out && out.exitCode === 0 ? out.stdout.replace(/\r?\n$/, '') : ''
   }
   return s.password ?? ''
+}
+
+// Approved credential fingerprints live in the mod's own store, not in a file the console reads.
+async function isTrusted($: EngineInterface, s: DbServer): Promise<boolean> {
+  if (!credentialSource(s)) return true
+  const trusted = ((await $.store.get('trusted')) as string[] | undefined) ?? []
+  return trusted.includes(credentialFingerprint(s))
+}
+
+async function trust($: EngineInterface, fingerprint: string) {
+  const trusted = ((await $.store.get('trusted')) as string[] | undefined) ?? []
+  if (!trusted.includes(fingerprint)) await $.store.set('trusted', [...trusted, fingerprint].slice(-200))
 }
 
 async function withPassword($: EngineInterface, s: DbServer): Promise<DbServer> {
@@ -385,6 +400,17 @@ async function run($: EngineInterface) {
   const db = await read($, database)
   const target = (await readServers($)).find(s => s.id === name)
   if (!target) return $.ui.toast(`No server "${name}" in ${configFile}`)
+  if (!(await isTrusted($, target))) {
+    await update($, confirm, () => ({ serverId: target.id, serverName: target.name, target: `${target.host}:${target.port ?? 3306}${target.https ? ' (TLS)' : ''}`, source: credentialSource(target)!, fingerprint: credentialFingerprint(target), then: 'run' as const, sql: stmt.sql, database: db }))
+    return
+  }
+  await runStatement($, target, db, stmt.sql)
+}
+
+// Runs one statement on a trusted server and records the result. The guard runs again in runSql.
+async function runStatement($: EngineInterface, target: DbServer, db: string, sql: string) {
+  const name = target.id
+  const stmt = { sql }
   await update($, running, () => true)
   const out = await withPassword($, target)
     .then(creds => runSql($, creds, db, stmt.sql))
@@ -404,6 +430,10 @@ async function refreshSchema($: EngineInterface, name: string) {
   if ((await read($, schemaLoading)) === name) return
   const target = (await readServers($)).find(s => s.id === name)
   if (!target || !target.host) return
+  if (!(await isTrusted($, target))) {
+    await update($, confirm, () => ({ serverId: target.id, serverName: target.name, target: `${target.host}:${target.port ?? 3306}${target.https ? ' (TLS)' : ''}`, source: credentialSource(target)!, fingerprint: credentialFingerprint(target), then: 'schema' as const, sql: '', database: '' }))
+    return
+  }
   await update($, schemaLoading, () => name)
   try {
     const creds = await withPassword($, target)
@@ -440,7 +470,9 @@ async function refreshSchema($: EngineInterface, name: string) {
 async function ensureSchema($: EngineInterface) {
   const name = await read($, server)
   const s = ((await read($, servers)) ?? []).find(x => x.id === name)
-  if (s && s.host && !(await read($, schema))?.[serverKey(s)]) await refreshSchema($, name)
+  const full = s ? (await readServers($)).find(x => x.id === s.id) : undefined
+  // Loads names only for a server whose credentials the person approved; it never prompts.
+  if (s && full && s.host && !(await read($, schema))?.[serverKey(s)] && (await isTrusted($, full))) await refreshSchema($, name)
 }
 
 // What the editor's autocomplete gets for the current server and database, kept under the props bound.
@@ -629,6 +661,7 @@ export const register: Register = on => {
   on('ui.message', async ($, e) => {
     const data = (e.data ?? {}) as Record<string, any>
     if (e.element === 'editor') {
+      if (data.type !== 'run' && data.type !== 'copy' && (await read($, confirm))) await update($, confirm, () => null)
       if (typeof data.text === 'string') await update($, query, () => data.text)
       if (typeof data.row === 'number') await update($, cursorRow, () => data.row)
       if (data.type === 'copy') {
@@ -683,6 +716,7 @@ export const register: Register = on => {
     const stmt = statementAt(text, row)
     const target = list.find(s => s.id === current)
     const menu = await read($, menuOpen)
+    const ask = await read($, confirm)
     const cmd = await read($, editorCmd)
     const help = await read($, showHelp)
     const pasted = await read($, paste)
@@ -695,7 +729,7 @@ export const register: Register = on => {
 
     const fixed = 11
     // An open menu sits under the toolbar; the editor gives up its rows.
-    const menuRows = menu === 'server' ? Math.max(1, list.length) + 2 : menu === 'db' ? Math.max(1, dbList.length) + 2 : 0
+    const menuRows = (menu === 'server' ? Math.max(1, list.length) + 2 : menu === 'db' ? Math.max(1, dbList.length) + 2 : 0) + (ask ? 6 : 0)
     const editorHeight = Math.max(3, Math.floor((rows - fixed) * 0.4) - menuRows)
     viewerHeight = Math.max(4, rows - fixed - editorHeight)
     viewerWidth = Math.max(20, cols - 4)
@@ -760,6 +794,32 @@ export const register: Register = on => {
           </Text>
           {target && !target.host ? <Text color="warning">{` · fill in host and user in ${configFile}`}</Text> : null}
         </Text>
+        {ask ? (
+          <Box flexDirection="column" borderStyle="round" borderColor="#d7a700" backgroundColor="#1e1e1e" paddingX={1}>
+            <Text bold color="warning">{`Connect to ${ask.serverName} with these credentials?`}</Text>
+            <Text>{`${ask.target} gets ${ask.source}.`}</Text>
+            <Text dimColor>Asked once per server, and again whenever its host or credential source changes in the config.</Text>
+            <Box flexDirection="row" gap={2} height={1}>
+              <Button
+                key="trust-yes"
+                label="Allow"
+                variant="primary"
+                onPress={() =>
+                  void (async () => {
+                    const a = ask
+                    await update($, confirm, () => null)
+                    const target = (await readServers($)).find(s => s.id === a.serverId)
+                    if (!target || credentialFingerprint(target) !== a.fingerprint) return $.ui.toast(`Not run: server "${a.serverName}" changed. Run it again.`)
+                    await trust($, a.fingerprint)
+                    if (a.then === 'run') await runStatement($, target, a.database, a.sql)
+                    else await refreshSchema($, a.serverId)
+                  })().catch(() => undefined)
+                }
+              />
+              <Button key="trust-no" label="Cancel" onPress={() => void update($, confirm, () => null)} />
+            </Box>
+          </Box>
+        ) : null}
         {menu === 'server' ? (
           <Box flexDirection="column" borderStyle="round" borderColor="#4ec9b0" backgroundColor="#1e1e1e" paddingX={1}>
             {list.length === 0 && <Text color="error">no servers in {configFile}</Text>}
@@ -773,6 +833,7 @@ export const register: Register = on => {
                     void (async () => {
                       await update($, server, () => sv.id)
                       await update($, menuOpen, () => '')
+                      await update($, confirm, () => null)
                       await pickDatabase($)
                       await saveSession($)
                       void ensureSchema($).catch(() => undefined)

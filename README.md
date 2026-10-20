@@ -31,8 +31,17 @@ Even when the database user could write, the console sends only one read stateme
      - mysql client commands (`\!`, `system`, `source`, …)
 2. **The server enforces it too:** each statement runs as `SET SESSION TRANSACTION READ ONLY; START TRANSACTION READ ONLY; … ; ROLLBACK`, with `sql_select_limit` and `max_execution_time` set. So even a statement the guard missed can't write.
 3. **The client:**
-   - `mysql` runs with `--skip-system-command`.
-   - The password goes through an option file read from a process substitution, never on the command line or on disk.
+   - `mysql` runs with `--skip-system-command`, and with `--defaults-file` set to the mod's own option file, so `~/.my.cnf` and `/etc/my.cnf` are never read. A pager, tee file or init command planted there has no effect.
+   - The password goes through that option file, read from a process substitution, never on the command line or on disk.
+   - The session's `sql_mode` drops `NO_BACKSLASH_ESCAPES` and `ANSI_QUOTES`, so the server reads strings the way the guard does.
+
+**Credentials ask first.** A server with a user asks once before its first query or schema load: *"Connect to <server> with these credentials? db.example.com:3306 gets user reader, password from $DB_PW"*. It asks again whenever its host or credential source changes in the config, so an edited config can't send your password somewhere new. A `passwordCommand` never runs before you allow it.
+
+**Recommended:** stop agents from editing the console's config by adding a deny rule to `~/.claude/settings.json`; Claude Code then refuses any edit to these paths:
+
+```json
+{ "permissions": { "deny": ["Edit(~/.claude/mods/sql/servers.json)", "Edit(~/.claude/plugins/store/**)", "Edit(~/.my.cnf)"] } }
+```
 
 Use a read-only database user anyway.
 
