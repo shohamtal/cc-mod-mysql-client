@@ -105,6 +105,10 @@ describe('servers', () => {
     const s = normalizeServer({ id: 'prd', name: 'Production', host: 'h', tag: 'production', username: 'r', passwordEnv: 'DB_PW', passwordCommand: ['pass', 'db'] })!
     expect([s.tag, s.passwordEnv, s.passwordCommand]).toEqual(['production', 'DB_PW', ['pass', 'db']])
   })
+  test('a host must be a plain name or address', async () => {
+    expect(normalizeServer({ id: 'x', host: 'db.example\n[client]' })).toBeUndefined()
+    expect(normalizeServer({ id: 'x', host: 'DB.Example.com' })!.host).toBe('db.example.com')
+  })
   test('an empty host stays listed so the pane can say what to fill in', async () => {
     expect(normalizeServer({ id: 'new', host: '' })!.host).toBe('')
     expect(normalizeServer({ id: 'x' })).toBeUndefined()

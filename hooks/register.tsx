@@ -705,7 +705,8 @@ export const register: Register = on => {
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Text, Button, Input, Client, Markdown } = $.ui.resolve(e) as any
-    const rows = e.viewport?.rows ?? 36
+    // The pane's own rows (the terminal's height is larger: transcript, prompt and footer share it).
+    const rows = (e.props as any).scroll?.bodyRows ?? e.viewport?.rows ?? 36
     const text = await read($, query)
     const r = await read($, result)
     const v = (await read($, view)) ?? EMPTY_VIEW

@@ -190,7 +190,9 @@ export function normalizeServer(raw: unknown): DbServer | undefined {
   const id = str(r.id) ?? str(r.name)
   const host = str(r.host)
   if (!id || host === undefined) return id && typeof r.host === 'string' ? { id, name: str(r.name) ?? id, host: '', port: 3306, https: false } : undefined
-  const s: DbServer = { id, name: str(r.name) ?? id, host, port: typeof r.port === 'number' ? r.port : 3306, https: r.https === true || r.ssl === true }
+  // A host is a name or an address, never text that could garble a prompt or an option.
+  if (!/^[A-Za-z0-9._\-:[\]]+$/.test(host)) return undefined
+  const s: DbServer = { id, name: str(r.name) ?? id, host: host.toLowerCase(), port: typeof r.port === 'number' ? r.port : 3306, https: r.https === true || r.ssl === true }
   if (r.insecure === true) s.insecure = true
   if (str(r.username)) s.username = str(r.username)
   if (typeof r.password === 'string') s.password = r.password
@@ -417,10 +419,10 @@ export function parseArgs(args: string): { file?: string; config?: string; rest:
 export function credentialSource(s: DbServer): string | undefined {
   const parts: string[] = []
   if (s.username) parts.push(`user ${s.username}`)
-  if (s.passwordCommand) parts.push(`password from the command \`${s.passwordCommand.join(' ')}\``)
-  else if (s.passwordEnv) parts.push(`password from $${s.passwordEnv}`)
+  if (s.passwordCommand) parts.push(`password from the command ${JSON.stringify(s.passwordCommand)}`)
+  else if (s.passwordEnv) parts.push(`password from $${JSON.stringify(s.passwordEnv).slice(1, -1)}`)
   else if (s.password) parts.push('password from servers.json')
-  if (s.mysqlPath) parts.push(`mysql client at ${s.mysqlPath}`)
+  if (s.mysqlPath) parts.push(`mysql client at ${JSON.stringify(s.mysqlPath)}`)
   return parts.length ? parts.join(', ') : undefined
 }
 

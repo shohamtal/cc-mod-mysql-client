@@ -40,7 +40,7 @@ Even when the database user could write, the console sends only one read stateme
 **Recommended:** a deny rule in `~/.claude/settings.json` makes Claude Code refuse edits to the console's config through its file tools. Shell commands aren't covered, so keep Bash on approval:
 
 ```json
-{ "permissions": { "deny": ["Edit(~/.claude/mods/sql/servers.json)", "Edit(~/.claude/plugins/store/**)", "Edit(~/.my.cnf)"] } }
+{ "permissions": { "deny": ["Edit(~/.claude/mods/sql/*.json)", "Edit(~/.claude/plugins/store/**)", "Edit(~/.my.cnf)"] } }
 ```
 
 Use a read-only database user anyway.
