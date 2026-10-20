@@ -33,7 +33,7 @@ describe('read-only guard', () => {
       'SELECT 1 /* never closed', 'SELECT 1\ndelimiter //', 'SELECT 1\nconnect other_host', 'SELECT 1\nuse mysql',
       // `--` without a following space is not a comment to MySQL (security review, finding 1)
       'SELECT 1--1;CREATE TABLE pwned(i INT)', 'SELECT 1--x\n;DROP TABLE t', 'SELECT 2 --1;DELETE FROM t',
-      "SELECT 1--'\n;INSERT INTO t VALUES(1)",
+      "SELECT 1--'\n;INSERT INTO t VALUES(1)", 'SELECT 1--\u00a0;DROP TABLE t', 'SELECT 1--\u3000;DROP TABLE t',
     ]) expect(readGuard(sql)).toBeDefined()
   })
 })

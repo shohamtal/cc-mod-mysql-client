@@ -37,7 +37,7 @@ Even when the database user could write, the console sends only one read stateme
 
 **Credentials ask first.** A server with a user asks once before its first query or schema load: *"Connect to <server> with these credentials? db.example.com:3306 gets user reader, password from $DB_PW"*. It asks again whenever its host or credential source changes in the config, so an edited config can't send your password somewhere new. A `passwordCommand` never runs before you allow it.
 
-**Recommended:** stop agents from editing the console's config by adding a deny rule to `~/.claude/settings.json`; Claude Code then refuses any edit to these paths:
+**Recommended:** a deny rule in `~/.claude/settings.json` makes Claude Code refuse edits to the console's config through its file tools. Shell commands aren't covered, so keep Bash on approval:
 
 ```json
 { "permissions": { "deny": ["Edit(~/.claude/mods/sql/servers.json)", "Edit(~/.claude/plugins/store/**)", "Edit(~/.my.cnf)"] } }

@@ -26,7 +26,7 @@ Use a read-only database user anyway.
 
 ## Hardening
 
-Deny agent edits to `~/.claude/mods/sql/servers.json`, `~/.claude/plugins/store/**` and `~/.my.cnf` in your Claude Code permissions; the README shows the rule.
+Deny edits to `~/.claude/mods/sql/servers.json`, `~/.claude/plugins/store/**` and `~/.my.cnf` in your Claude Code permissions (the README shows the rule). That covers Claude Code's file tools; shell commands need Bash kept on approval.
 
 ## Reporting a vulnerability
 

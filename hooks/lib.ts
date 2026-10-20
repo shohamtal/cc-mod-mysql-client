@@ -9,7 +9,8 @@ export type Statement = { start: number; end: number; sql: string }
 
 // MySQL starts a `--` comment only when whitespace, a control character or the end follows it:
 // `1--1` is arithmetic. Every reader of SQL here must agree with the server on this.
-export const isDashComment = (s: string, i: number) => s[i] === '-' && s[i + 1] === '-' && (i + 2 >= s.length || /[\s\x00-\x1f]/.test(s[i + 2]!))
+// MySQL's test is single-byte (my_isspace / my_iscntrl), so only ASCII control and space count.
+export const isDashComment = (s: string, i: number) => s[i] === '-' && s[i + 1] === '-' && (i + 2 >= s.length || s.charCodeAt(i + 2) <= 0x20 || s.charCodeAt(i + 2) === 0x7f)
 
 // Splits the editor text into statements: a `;` outside strings and comments ends one,
 // and so does a blank line. `start` is the statement's first line (where ▶ sits).
