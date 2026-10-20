@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.3
+
+- **A finished query no longer overwrites a newer session file:** when the agent or another editor writes the session file while a query runs (or before a delayed editor save), the file's query, cursor, server and database are kept, only `lastRun` is added, and the pane reloads them. A server or database you pick from the menu still wins. A change is detected by modification time or by content, so two writes in one time tick count too. An outside write that lands within the 250 ms after your last keystroke wins over that keystroke. Reported in the catalogue review.
+
 ## 0.2.2
 
 - **Copy works in every terminal:** copies go to `pbcopy` / `wl-copy` / `xclip` / `clip.exe` first, and the terminal's OSC 52 only as a fallback. OSC 52 is off by default in iTerm2 and missing in Terminal.app, where copying looked like it worked but left the clipboard empty.

@@ -8,7 +8,7 @@ const HOME = '/home/tester'
 const BASE = `${HOME}/.claude/mods/sql`
 const PANE = { plugin: 'mysql-client', surface: 'terminal', component: 'Pane', requestId: 'sql', props: { title: 'SQL', isFocused: true, bodyColumns: 110, placement: 'dock' }, viewport: { columns: 110, rows: 44 } } as any
 
-function world(on: On, servers: unknown[]) {
+function world(on: On, servers: unknown[], opts: { duringMysql?: (files: Map<string, string>, mtimes: Map<string, number>) => void } = {}) {
   const files = new Map<string, string>([[`${BASE}/servers.json`, JSON.stringify({ servers })]])
   const runs: { argv: readonly string[]; stdin?: string }[] = []
   let clock = 1
@@ -35,6 +35,7 @@ function world(on: On, servers: unknown[]) {
   on('process.run', ($, e) => {
     runs.push({ argv: e.argv, stdin: e.init?.stdin })
     const isMysql = e.argv[0] === '/bin/bash'
+    if (isMysql) opts.duringMysql?.(files, mtimes)
     return { value: { exitCode: 0, stdout: isMysql ? 'x\n1\n' : 'secret-from-command\n', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } } as any
   })
   const mysql = () => runs.filter(r => r.argv[0] === '/bin/bash')
@@ -233,5 +234,39 @@ describe('clipboard and panning', () => {
     expect(await lines()).not.toBe(before)
     await ui.post({ type: 'pan', by: -50 }, { in: 'viewer' })
     expect(await lines()).toBe(before)
+  })
+})
+
+describe('session file edits made while a query runs', () => {
+  test("the person's server pick wins over a session file the agent just wrote, and keeps the agent's query", async ($, on) => {
+    const file = `${BASE}/sessions/pick.json`
+    const w = world(on, [{ id: 'a', name: 'A', host: 'a.example', databases: ['app'] }, { id: 'b', name: 'B', host: 'b.example', databases: ['app'] }])
+    await $.tool.call({ tool: TOOL, action: 'status', filepath: 'pick.json' } as any)
+    const ui: any = await $.ui.mount(PANE)
+    const st = JSON.parse(w.files.get(file)!)
+    w.files.set(file, JSON.stringify({ ...st, server: 'a', query: 'SELECT 3 AS agent' }))
+    await ui.press({ key: 'server-menu' })
+    await ui.press({ key: 'pick:b' })
+    const saved = JSON.parse(w.files.get(file)!)
+    expect(saved.server).toBe('b')
+    expect(saved.query).toBe('SELECT 3 AS agent')
+  })
+
+  test('a finished query records lastRun without replacing a newer query someone else wrote', async ($, on) => {
+    const file = `${BASE}/sessions/race.json`
+    const w = world(on, [{ id: 'local', name: 'Local', host: 'localhost', databases: ['app'] }], {
+      duringMysql: (files, mtimes) => {
+        const st = JSON.parse(files.get(file)!)
+        files.set(file, JSON.stringify({ ...st, query: 'SELECT 2 AS newer', cursorRow: 0 }))
+        mtimes.set(file, 1_000_000)
+      },
+    })
+    await $.tool.call({ tool: TOOL, action: 'status', filepath: 'race.json' } as any)
+    const ui: any = await $.ui.mount(PANE)
+    await ui.post({ type: 'run', text: 'SELECT 1', row: 0 }, { in: 'editor' })
+    const saved = JSON.parse(w.files.get(file)!)
+    expect(saved.query).toBe('SELECT 2 AS newer')
+    expect(saved.lastRun).toBeDefined()
+    expect(JSON.stringify((await ui.find({ key: 'editor' }))?.props?.props)).toContain('SELECT 2 AS newer')
   })
 })

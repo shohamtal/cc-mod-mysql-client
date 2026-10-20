@@ -109,6 +109,9 @@ let base = ''
 let sessionFile = ''
 let configFile = ''
 const seen: Record<string, number> = {}
+// The session file's text as this pane last read or wrote it: two writes within one mtime tick
+// still differ in content.
+const seenText: Record<string, string> = {}
 let saveTimer: Timer | undefined
 let viewerHeight = 20
 let viewerWidth = 80
@@ -141,6 +144,7 @@ async function resolvePath($: EngineInterface, p: string, under: string): Promis
 async function write($: EngineInterface, file: string, text: string) {
   await $.fs.write(file, text)
   seen[file] = (await $.fs.stat(file)).mtimeMs
+  seenText[file] = text
 }
 
 async function readJson($: EngineInterface, file: string): Promise<any> {
@@ -281,7 +285,14 @@ async function sync($: EngineInterface) {
   if (await changed($, sessionFile)) {
     // A prompt answers for the statement it shows; any outside change to the console cancels it.
     if (await read($, confirm)) await update($, confirm, () => null)
-    const st = await readJson($, sessionFile)
+    const raw = await $.fs.read(sessionFile).catch(() => undefined)
+    if (raw !== undefined) seenText[sessionFile] = raw
+    let st: any
+    try {
+      st = raw === undefined ? undefined : JSON.parse(raw)
+    } catch {
+      st = undefined
+    }
     if (st) {
       if (typeof st.query === 'string' && st.query !== (await read($, query))) {
         await update($, query, () => st.query)
@@ -353,6 +364,7 @@ async function attach($: EngineInterface, file?: string, config?: string): Promi
     sessionFile = nextFile
     configFile = nextConfig
     for (const k of Object.keys(seen)) delete seen[k]
+    for (const k of Object.keys(seenText)) delete seenText[k]
     await update($, paths, () => ({ file: nextFile, config: nextConfig }))
     await update($, result, () => null)
     await update($, view, () => EMPTY_VIEW)
@@ -363,16 +375,29 @@ async function attach($: EngineInterface, file?: string, config?: string): Promi
 
 async function saveSession($: EngineInterface, extra: Record<string, unknown> = {}) {
   if (!sessionFile) return
-  const old = (await readJson($, sessionFile)) ?? {}
-  const next = {
-    ...old,
-    server: await read($, server),
-    database: await read($, database),
-    cursorRow: await read($, cursorRow),
-    query: await read($, query),
-    ...extra,
+  const file = sessionFile
+  // Someone else (the agent, another editor) wrote the file since this pane last read or wrote it:
+  // their editor fields win, only `extra` (a run's lastRun, a menu pick) is merged in, and the pane
+  // reloads them. The mtime is read before the text, so a write in between counts as theirs.
+  const mtime = await $.fs.stat(file).then(s => s.mtimeMs, () => undefined)
+  const raw = await $.fs.read(file).catch(() => undefined)
+  let old: Record<string, unknown> = {}
+  try {
+    old = raw === undefined ? {} : (JSON.parse(raw) ?? {})
+  } catch {
+    old = {}
   }
-  await write($, sessionFile, JSON.stringify(next, null, 2) + '\n')
+  const external =
+    (mtime !== undefined && seen[file] !== undefined && mtime !== seen[file]) ||
+    (raw !== undefined && seenText[file] !== undefined && raw !== seenText[file])
+  const mine = external
+    ? {}
+    : { server: await read($, server), database: await read($, database), cursorRow: await read($, cursorRow), query: await read($, query) }
+  await write($, file, JSON.stringify({ ...old, ...mine, ...extra }, null, 2) + '\n')
+  if (external) {
+    delete seen[file]
+    await sync($)
+  }
 }
 
 function scheduleSave($: EngineInterface) {
@@ -1019,7 +1044,8 @@ export const register: Register = on => {
                       await update($, menuOpen, () => '')
                       await update($, confirm, () => null)
                       await pickDatabase($)
-                      await saveSession($)
+                      // The person's pick wins over a session file someone else just wrote.
+                      await saveSession($, { server: sv.id, database: await read($, database) })
                       void ensureSchema($).catch(() => undefined)
                     })()
                   }
@@ -1042,7 +1068,7 @@ export const register: Register = on => {
                   void (async () => {
                     await update($, database, () => d)
                     await update($, menuOpen, () => '')
-                    await saveSession($)
+                    await saveSession($, { database: d })
                   })()
                 }
               />
