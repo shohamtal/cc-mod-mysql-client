@@ -2,7 +2,7 @@
 
 ## 0.2.1
 
-- **Renamed** to `mysql-client` (repo `cc-mod-mysql-client`), so people looking for a MySQL client, SQL client or SQL editor find it. `/sql` is unchanged. The agent tool is now `mcp__mysql-client__console`, and the credentials you allowed are asked for once more.
+- **Renamed** to `mysql-client` (repo `cc-mod-mysql-client`), so people looking for a MySQL client, SQL client or SQL editor find it. `/sql` is unchanged. The agent tool is now `mcp__mysql-client__console`, and the credentials you allowed are asked for once more. Servers remembered as production start fresh too: a server that is no longer tagged production can be unlocked for a session again.
 - **Tool description fits:** Claude Code passes the model only the first 2048 characters, which cut off the write rules. They now come first, and a test keeps the description under the limit.
 - **Screenshots and a demo database** (`demo/`).
 
