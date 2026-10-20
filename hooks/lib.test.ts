@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { normalizeServer, mysqlInvocation, mysqlScript, parseArgs, parseBatch, parseStatements, readGuard, sliceSegs, statementAt, tableLines, formatSql } from './lib'
+import { classifyStatement, mysqlWriteScript, normalizeServer, mysqlInvocation, mysqlScript, parseArgs, parseBatch, parseStatements, readGuard, sliceSegs, statementAt, tableLines, formatSql } from './lib'
 
 describe('read-only guard', () => {
   test('lets reads through', async () => {
@@ -112,5 +112,94 @@ describe('servers', () => {
   test('an empty host stays listed so the pane can say what to fill in', async () => {
     expect(normalizeServer({ id: 'new', host: '' })!.host).toBe('')
     expect(normalizeServer({ id: 'x' })).toBeUndefined()
+  })
+})
+
+describe('writes the person can unlock', () => {
+  test('only plain INSERT, UPDATE and DELETE are writes', async () => {
+    expect(classifyStatement('INSERT INTO t (a) VALUES (1)')).toMatchObject({ kind: 'write', verb: 'INSERT', noWhere: false })
+    expect(classifyStatement("UPDATE t SET a = 'x' WHERE id = 3")).toMatchObject({ kind: 'write', verb: 'UPDATE', noWhere: false })
+    expect(classifyStatement('DELETE FROM t WHERE id = 3;')).toMatchObject({ kind: 'write', verb: 'DELETE', noWhere: false })
+    expect(classifyStatement('INSERT INTO t SELECT * FROM u WHERE x = 1')).toMatchObject({ kind: 'write', verb: 'INSERT', noWhere: false })
+    expect(classifyStatement('INSERT INTO t (a) VALUES (1) ON DUPLICATE KEY UPDATE a = 2').kind).toBe('write')
+    expect(classifyStatement('SELECT 1').kind).toBe('read')
+  })
+
+  test('UPDATE or DELETE without WHERE is flagged', async () => {
+    expect(classifyStatement('UPDATE t SET a = 1')).toMatchObject({ kind: 'write', verb: 'UPDATE', noWhere: true })
+    expect(classifyStatement("DELETE FROM t -- WHERE id = 1")).toMatchObject({ kind: 'write', verb: 'DELETE', noWhere: true })
+    expect(classifyStatement("UPDATE t SET note = 'where' ")).toMatchObject({ kind: 'write', verb: 'UPDATE', noWhere: true })
+  })
+
+  test('schema, privilege and procedure statements are writes too; DDL is marked as not undoable', async () => {
+    for (const sql of ['DROP TABLE t', 'TRUNCATE t', 'ALTER TABLE t ADD c INT', 'CREATE TABLE x (a INT)', 'RENAME TABLE a TO b',
+      "GRANT SELECT, SHUTDOWN ON app.* TO 'r'@'%'", "REVOKE ALL ON app.* FROM 'r'@'%'", 'CREATE INDEX i ON t (a)', 'DROP DATABASE scratch',
+      'ALTER TABLE t ADD COLUMN c INT, LOCK=NONE']) expect(classifyStatement(sql)).toMatchObject({ kind: 'write', ddl: true })
+    expect(classifyStatement('REPLACE INTO t VALUES (1)')).toMatchObject({ kind: 'write', ddl: false })
+    expect(classifyStatement('CALL app.cleanup(7)')).toMatchObject({ kind: 'write', verb: 'CALL', ddl: true })
+  })
+
+  test('what touches files, controls the session or server, or hides more statements stays refused, approved or not', async () => {
+    for (const sql of [
+      'LOAD DATA INFILE "x" INTO TABLE t', 'LOAD DATA LOCAL INFILE "/etc/passwd" INTO TABLE t', 'INSERT INTO t SELECT * FROM u INTO OUTFILE "/tmp/x"',
+      'CREATE TABLE t2 AS SELECT * FROM t INTO DUMPFILE "/tmp/x"', 'DELETE FROM t WHERE id = GET_LOCK("x", 1)',
+      'UPDATE t SET a = LOAD_FILE("/etc/passwd") WHERE id = 1', 'UPDATE t SET a = 1; DROP TABLE t', 'DELETE FROM t WHERE id = 1--1;DROP TABLE u',
+      'INSERT INTO t VALUES (1) /*! ; DROP TABLE t */', 'UPDATE t SET a = 1\nsystem rm -rf ~', 'SET autocommit = 0', 'START TRANSACTION', 'COMMIT',
+      'LOCK TABLES t WRITE', 'KILL 12', 'SHUTDOWN', 'INSTALL PLUGIN x SONAME "y.so"', 'CREATE PROCEDURE p() BEGIN DELETE FROM t; END',
+      'DROP DATABASE mysql', 'CREATE SCHEMA IF NOT EXISTS `sys`', 'WITH x AS (SELECT 1) DELETE FROM t', 'HANDLER t OPEN', 'PREPARE s FROM "x"',
+    ]) expect(classifyStatement(sql).kind).toBe('refused')
+  })
+
+  test('an approved write runs in one transaction and reports affected rows, without the read-only session', async () => {
+    expect(mysqlWriteScript('UPDATE t SET a = 1 WHERE id = 2;')).toBe(
+      "SET SESSION sql_mode = REPLACE(REPLACE(@@SESSION.sql_mode, 'NO_BACKSLASH_ESCAPES', ''), 'ANSI_QUOTES', '');\nSTART TRANSACTION;\nUPDATE t SET a = 1 WHERE id = 2;\nSELECT ROW_COUNT() AS affected_rows;\nCOMMIT;\n",
+    )
+  })
+})
+
+describe('security review of the write toggle', () => {
+  test('DDL reaches only tables, indexes, views, databases, users and roles; routines and server objects stay refused', async () => {
+    for (const sql of [
+      "CREATE FUNCTION f RETURNS STRING SONAME 'udf.so'", 'CREATE PROCEDURE p() SET GLOBAL max_connections = 1', 'CREATE EVENT e ON SCHEDULE EVERY 1 HOUR DO FLUSH LOGS',
+      'ALTER EVENT e DO RESET MASTER', 'CREATE TRIGGER tr BEFORE INSERT ON t FOR EACH ROW SET NEW.a = 1', 'CREATE AGGREGATE FUNCTION f RETURNS INT SONAME "x.so"',
+      'ALTER INSTANCE DISABLE INNODB REDO_LOG', 'CREATE RESOURCE GROUP g TYPE = USER', "CREATE TABLESPACE ts ADD DATAFILE '/tmp/ts.ibd'",
+      "CREATE TABLE t (a INT) DATA DIRECTORY = '/tmp'", "ALTER TABLE t INDEX DIRECTORY = '/tmp'", "CREATE TABLE t (a INT) ENGINE=FEDERATED CONNECTION='mysql://u@h/d/t'",
+      "CREATE SERVER s FOREIGN DATA WRAPPER mysql OPTIONS (HOST 'h')", "CREATE DEFINER = 'root'@'localhost' VIEW v AS SELECT 1", 'CREATE DEFINER=root@localhost VIEW v AS SELECT 1',
+      'CREATE SPATIAL REFERENCE SYSTEM 1 NAME "x"', 'CREATE LOGFILE GROUP g ADD UNDOFILE "u"', 'DROP TABLESPACE ts', 'RENAME x TO y',
+    ]) expect(classifyStatement(sql, 'app').kind).toBe('refused')
+    for (const sql of ['CREATE TABLE IF NOT EXISTS t (a INT)', 'CREATE TEMPORARY TABLE t (a INT)', 'CREATE UNIQUE INDEX i ON t (a)', 'CREATE OR REPLACE ALGORITHM = MERGE SQL SECURITY INVOKER VIEW v AS SELECT 1',
+      'ALTER TABLE t ADD COLUMN b INT', 'DROP PROCEDURE IF EXISTS p', 'DROP EVENT e', 'CREATE USER u IDENTIFIED BY "x"', 'CREATE ROLE r', 'RENAME TABLE a TO b', 'TRUNCATE t', 'CREATE DATABASE d',
+    ]) expect(classifyStatement(sql, 'app')).toMatchObject({ kind: 'write', ddl: true })
+    expect(classifyStatement('CALL p()', 'app')).toMatchObject({ kind: 'write', verb: 'CALL', ddl: true })
+  })
+  test('system schemas are never written, named, quoted or selected', async () => {
+    for (const sql of ["UPDATE mysql.user SET authentication_string = '' WHERE user = 'x'", 'UPDATE `mysql`.`user` SET a = 1 WHERE b = 2',
+      'UPDATE performance_schema.setup_instruments SET ENABLED = "NO" WHERE NAME LIKE "%"', 'DELETE FROM sys . x WHERE a = 1',
+      'INSERT INTO t SELECT * FROM information_schema.tables WHERE 0', 'UPDATE mysql/**/.user SET x=1 WHERE id=1',
+      'UPDATE mysql#c\n.user SET x=1 WHERE id=1', 'UPDATE mysql-- c\n.user SET x=1 WHERE id=1', 'UPDATE `mysql` /* x */ . `user` SET a = 1 WHERE b = 2',
+    ]) expect(classifyStatement(sql).kind).toBe('refused')
+    expect(classifyStatement('DELETE FROM user WHERE id = 1', 'mysql').kind).toBe('refused')
+    expect(classifyStatement('DELETE FROM user WHERE id = 1', 'app').kind).toBe('write')
+  })
+  test('the no-WHERE warning ignores a WHERE inside parentheses, and WHERE 1 / TRUE / 1=1', async () => {
+    expect(classifyStatement('UPDATE t SET a = (SELECT 1 FROM u WHERE u.id = 2)')).toMatchObject({ noWhere: true })
+    for (const w of ['1', 'TRUE', '1=1', '1 = 1', "'1'='1'", '(1)', '((1))', '2', '1>0', 'NOT 0', 'id = id', '1 LIMIT 5', '(1) ORDER BY id']) expect(classifyStatement(`DELETE FROM t WHERE ${w}`)).toMatchObject({ noWhere: true })
+    for (const w of ['id = 1', '0 < id', 'a > b', '(id = 1)', '(a = 1) AND (b = 2)', 'id IN (1, 2)']) expect(classifyStatement(`DELETE FROM t WHERE ${w}`)).toMatchObject({ noWhere: false })
+    expect(classifyStatement('DELETE FROM t WHERE id IN (SELECT id FROM u WHERE x = 1)')).toMatchObject({ noWhere: false })
+  })
+  test('optimizer hints are refused in writes', async () => {
+    expect(classifyStatement('UPDATE /*+ SET_VAR(foreign_key_checks=OFF) */ t SET a = 1 WHERE b = 1').kind).toBe('refused')
+  })
+  test('calls to functions that may be stored functions are named for the prompt', async () => {
+    expect(classifyStatement("UPDATE t SET a = NOW(), b = CONCAT(a, 'x'), c = audit_log(a) WHERE id = 1")).toMatchObject({ calls: ['audit_log'] })
+    expect(classifyStatement('DELETE FROM t WHERE id = app.next_id()')).toMatchObject({ calls: ['app.next_id'] })
+    expect(classifyStatement('INSERT INTO t (a, b) VALUES (1, 2)')).toMatchObject({ calls: [] })
+    expect(classifyStatement('INSERT INTO `orders` (a) VALUES (`audit`(1))')).toMatchObject({ calls: ['audit'] })
+    expect(classifyStatement("UPDATE t SET a = 'f(x)' WHERE id = 1")).toMatchObject({ calls: [] })
+  })
+  test('reads refuse hints that lift the time limit or change settings', async () => {
+    expect(readGuard('SELECT /*+ MAX_EXECUTION_TIME(0) */ * FROM t')).toBeDefined()
+    expect(readGuard('SELECT /*+ SET_VAR(sort_buffer_size = 1) */ * FROM t')).toBeDefined()
+    expect(readGuard('SELECT /*+ INDEX(t idx) */ * FROM t')).toBeUndefined()
   })
 })

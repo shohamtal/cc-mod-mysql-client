@@ -1,7 +1,7 @@
 {
   "name": "sql-console",
-  "version": "0.1.0",
-  "description": "Read-only SQL (MySQL) console in a Claude Code side pane: Claude writes queries, you run them; schema-aware autocomplete.",
+  "version": "0.2.0",
+  "description": "MySQL console in a Claude Code side pane: Claude writes queries, you run them. Read-only by default; writes (data, schema, privileges) run only after you approve them. Schema-aware autocomplete.",
   "types": "./types/index.d.ts",
   "author": {
     "name": "shohamtal"
@@ -13,9 +13,9 @@
     "mariadb",
     "database",
     "console",
-    "read-only",
     "pane",
-    "mod"
+    "mod",
+    "safe-writes"
   ],
   "homepage": "https://github.com/shohamtal/cc-mod-sql-console"
 }

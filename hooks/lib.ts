@@ -104,6 +104,38 @@ export function skeleton(sql: string): string | undefined {
   return out
 }
 
+// The statement as MySQL tokenizes it, minus comments: strings become '_str_', quoted names stay
+// (with their backticks), and every comment becomes one space. `undefined` when something never ends.
+export function decomment(sql: string): string | undefined {
+  let out = ''
+  for (let i = 0; i < sql.length; i++) {
+    const c = sql[i]!
+    if (c === "'" || c === '"' || c === '`') {
+      let j = i + 1
+      for (; j < sql.length; j++) {
+        if (sql[j] === '\\' && c !== '`') j++
+        else if (sql[j] === c) {
+          if (sql[j + 1] === c) j++
+          else break
+        }
+      }
+      if (j >= sql.length) return undefined
+      out += c === '`' ? sql.slice(i, j + 1) : " '_str_' "
+      i = j
+    } else if (c === '/' && sql[i + 1] === '*') {
+      const end = sql.indexOf('*/', i + 2)
+      if (end < 0) return undefined
+      out += ' '
+      i = end + 1
+    } else if (c === '#' || isDashComment(sql, i)) {
+      const end = sql.indexOf('\n', i)
+      out += ' '
+      i = end < 0 ? sql.length : end
+    } else out += c
+  }
+  return out
+}
+
 const FIRST = new Set(['SELECT', 'WITH', 'SHOW', 'DESCRIBE', 'DESC', 'EXPLAIN', 'TABLE', 'VALUES'])
 
 // Words that change data, schema, privileges, sessions or transactions, or run code.
@@ -126,9 +158,10 @@ const CLIENT_COMMANDS = new Set([
   'QUERY_ATTRIBUTES', 'SSL_SESSION_DATA_PRINT',
 ])
 
-// Why the statement is refused, or undefined when it only reads.
-export function readGuard(sql: string): string | undefined {
-  const refuse = (why: string) => `Read-only console: not sent, ${why}.`
+// What the guard reads: the statement's words (uppercased, strings and comments removed),
+// or why its shape alone is refused. Every statement passes this, read or write.
+function structure(sql: string): { words: string[]; body: string } | { refused: string } {
+  const refuse = (why: string) => ({ refused: `Not sent: ${why}.` })
   const sk = skeleton(sql)
   if (sk === undefined) return refuse('a string, quoted name or comment is never closed')
   if (sk.includes('/*!')) return refuse('`/*! … */` comments are run by MySQL')
@@ -141,6 +174,16 @@ export function readGuard(sql: string): string | undefined {
   }
   // `CHARACTER SET x` / `CHARSET x` name an encoding; they write nothing.
   const words = (body.replace(/\bCHARACTER\s+SET\b/gi, ' ').match(/[A-Za-z_][A-Za-z0-9_$]*/g) ?? []).map(w => w.toUpperCase())
+  return { words, body }
+}
+
+// Why the statement is refused, or undefined when it only reads.
+export function readGuard(sql: string): string | undefined {
+  const refuse = (why: string) => `Read-only console: not sent, ${why}.`
+  const st = structure(sql)
+  if ('refused' in st) return `Read-only console: ${st.refused.charAt(0).toLowerCase()}${st.refused.slice(1)}`
+  const { words, body } = st
+  if (/\/\*\+[\s\S]*?\b(SET_VAR|MAX_EXECUTION_TIME)\b/i.test(sql)) return refuse('optimizer hints that change session settings or the time limit are not allowed')
   const lead = body.trimStart()
   const first = lead.startsWith('(') ? 'SELECT' : words[0]
   if (!first || !FIRST.has(first)) {
@@ -153,6 +196,159 @@ export function readGuard(sql: string): string | undefined {
     if (WRITE_WORDS.has(w)) return refuse(`it uses ${w}, which can write, lock or change the session`)
   }
   return undefined
+}
+
+// The writes the console can run once the person approves them: one data change (INSERT, UPDATE,
+// DELETE, REPLACE), schema change (CREATE, ALTER, DROP, TRUNCATE, RENAME), privilege change
+// (GRANT, REVOKE) or procedure call (CALL). Still refused, approved or not: anything that touches
+// files (LOAD, OUTFILE, DUMPFILE, LOAD_FILE), controls the session or server (SET, transactions,
+// locks, KILL, SHUTDOWN, plugins), or hides more than the one statement the prompt shows.
+const WRITE_VERBS = new Set(['INSERT', 'UPDATE', 'DELETE', 'REPLACE', 'CREATE', 'ALTER', 'DROP', 'TRUNCATE', 'RENAME', 'GRANT', 'REVOKE', 'CALL'])
+// Statements MySQL commits at once: they can't be rolled back. A CALL may commit inside, too.
+const DDL_VERBS = new Set(['CREATE', 'ALTER', 'DROP', 'TRUNCATE', 'RENAME', 'GRANT', 'REVOKE'])
+// Words that stay refused inside any write.
+const NEVER_IN_WRITE = new Set([
+  'LOAD', 'OUTFILE', 'DUMPFILE', 'LOAD_FILE', 'SYS_EXEC', 'SYS_EVAL', 'HANDLER', 'KILL', 'COMMIT', 'ROLLBACK',
+  'SAVEPOINT', 'UNLOCK', 'PREPARE', 'DEALLOCATE', 'DELIMITER', 'INSTALL', 'UNINSTALL', 'CLONE', 'RESTART',
+  'IMPORT', 'GET_LOCK', 'RELEASE_LOCK', 'RELEASE_ALL_LOCKS', 'DBLINK', 'DBLINK_EXEC', 'SONAME',
+])
+// The objects CREATE / ALTER / DROP / RENAME may name. Routines, triggers and events run later
+// without a prompt, so they can be dropped here but not created or changed; server objects
+// (INSTANCE, TABLESPACE, SERVER, RESOURCE GROUP, …) are never touched.
+const OBJECTS: Record<string, Set<string>> = {
+  CREATE: new Set(['TABLE', 'INDEX', 'VIEW', 'DATABASE', 'SCHEMA', 'USER', 'ROLE']),
+  ALTER: new Set(['TABLE', 'VIEW', 'DATABASE', 'SCHEMA', 'USER']),
+  DROP: new Set(['TABLE', 'INDEX', 'VIEW', 'DATABASE', 'SCHEMA', 'USER', 'ROLE', 'PROCEDURE', 'FUNCTION', 'TRIGGER', 'EVENT']),
+  RENAME: new Set(['TABLE', 'USER']),
+}
+// Words between the verb and the object type: CREATE OR REPLACE ALGORITHM = MERGE SQL SECURITY INVOKER VIEW …
+const OBJECT_MODIFIERS = new Set(['OR', 'REPLACE', 'TEMPORARY', 'UNIQUE', 'FULLTEXT', 'SPATIAL', 'ONLINE', 'OFFLINE', 'ALGORITHM', 'UNDEFINED', 'MERGE', 'TEMPTABLE', 'SQL', 'SECURITY', 'INVOKER', 'DEFINER'])
+// Privilege names a GRANT / REVOKE may list that are refused elsewhere.
+const PRIVILEGE_WORDS = new Set(['SHUTDOWN', 'RELOAD', 'PROCESS', 'FILE', 'EXECUTE', 'LOCK', 'REPLICATION', 'SUPER', 'EVENT', 'TRIGGER', 'CREATE', 'ALTER', 'DROP', 'INSERT', 'UPDATE', 'DELETE', 'INDEX', 'REFERENCES', 'USAGE'])
+
+export type Classified =
+  | { kind: 'read' }
+  | { kind: 'write'; verb: string; noWhere: boolean; calls: string[]; ddl: boolean }
+  | { kind: 'refused'; reason: string }
+
+// Schemas whose tables are the server's own (accounts, privileges, instrumentation).
+export const SYSTEM_SCHEMAS = ['mysql', 'sys', 'performance_schema', 'information_schema']
+const SYSTEM_REF = new RegExp(`(^|[^A-Za-z0-9_$])\`?(${SYSTEM_SCHEMAS.join('|')})\`?\\s*\\.`, 'i')
+
+// Built-in functions an INSERT / UPDATE / DELETE may call without a warning. Anything else may be
+// a stored function, which can write more on its own, so the prompt names it.
+const BUILTINS = new Set(('ABS ACOS ADDDATE ADDTIME AES_DECRYPT AES_ENCRYPT ANY_VALUE ASCII ASIN ATAN ATAN2 AVG BIN BIT_AND BIT_COUNT BIT_LENGTH BIT_OR BIT_XOR CAST CEIL CEILING CHAR CHAR_LENGTH CHARACTER_LENGTH COALESCE CONCAT CONCAT_WS CONV CONVERT CONVERT_TZ COS COT COUNT CRC32 CURDATE CURRENT_DATE CURRENT_TIME CURRENT_TIMESTAMP CURTIME DATE DATE_ADD DATE_FORMAT DATE_SUB DATEDIFF DAY DAYNAME DAYOFMONTH DAYOFWEEK DAYOFYEAR DEGREES ELT EXP EXTRACT FIELD FIND_IN_SET FLOOR FORMAT FROM_BASE64 FROM_DAYS FROM_UNIXTIME GREATEST GROUP_CONCAT HEX HOUR IF IFNULL IN INET_ATON INET_NTOA INSERT INSTR INTERVAL ISNULL JSON_ARRAY JSON_ARRAY_APPEND JSON_ARRAY_INSERT JSON_CONTAINS JSON_CONTAINS_PATH JSON_EXTRACT JSON_INSERT JSON_KEYS JSON_LENGTH JSON_MERGE_PATCH JSON_MERGE_PRESERVE JSON_OBJECT JSON_QUOTE JSON_REMOVE JSON_REPLACE JSON_SEARCH JSON_SET JSON_TYPE JSON_UNQUOTE JSON_VALID LAST_DAY LAST_INSERT_ID LCASE LEAST LEFT LENGTH LN LOCALTIME LOCALTIMESTAMP LOCATE LOG LOG10 LOG2 LOWER LPAD LTRIM MAKEDATE MAKETIME MAX MD5 MICROSECOND MID MIN MINUTE MOD MONTH MONTHNAME NOW NULLIF OCT ORD PERIOD_ADD PERIOD_DIFF PI POSITION POW POWER QUARTER QUOTE RADIANS RAND REGEXP_INSTR REGEXP_LIKE REGEXP_REPLACE REGEXP_SUBSTR REPEAT REPLACE REVERSE RIGHT ROUND RPAD RTRIM SEC_TO_TIME SECOND SHA1 SHA2 SIGN SIN SPACE SQRT STD STDDEV STR_TO_DATE STRCMP SUBDATE SUBSTR SUBSTRING SUBSTRING_INDEX SUBTIME SUM SYSDATE TAN TIME TIME_FORMAT TIME_TO_SEC TIMEDIFF TIMESTAMP TIMESTAMPADD TIMESTAMPDIFF TO_BASE64 TO_DAYS TO_SECONDS TRIM TRUNCATE UCASE UNHEX UNIX_TIMESTAMP UPPER USER UTC_DATE UTC_TIME UTC_TIMESTAMP UUID UUID_SHORT UUID_TO_BIN BIN_TO_UUID VALUES VAR_POP VAR_SAMP VARIANCE WEEK WEEKDAY WEEKOFYEAR YEAR YEARWEEK ' +
+  'EXISTS NOT AND OR SELECT FROM WHERE AS ON USING JOIN LIMIT ORDER BY GROUP HAVING DISTINCT ALL ANY SOME CASE WHEN THEN ELSE END INTO SET UPDATE DELETE KEY DUPLICATE NULL TRUE FALSE BETWEEN LIKE IS REGEXP RLIKE DIV').split(' '))
+
+// Where the statement's own WHERE starts (outside any parentheses), or -1.
+function topLevelWhere(sk: string): number {
+  let depth = 0
+  for (let i = 0; i < sk.length; i++) {
+    const c = sk[i]!
+    if (c === '(') depth++
+    else if (c === ')') depth = Math.max(0, depth - 1)
+    else if (depth === 0 && /^WHERE\b/i.test(sk.slice(i, i + 6)) && !/[A-Za-z0-9_$]/.test(sk[i - 1] ?? ' ')) return i
+  }
+  return -1
+}
+
+// The condition without a trailing ORDER BY / LIMIT at its own level.
+function cutTail(cond: string): string {
+  let depth = 0
+  for (let i = 0; i < cond.length; i++) {
+    const c = cond[i]!
+    if (c === '(') depth++
+    else if (c === ')') depth = Math.max(0, depth - 1)
+    else if (depth === 0 && /^(ORDER|LIMIT)\b/i.test(cond.slice(i, i + 6)) && !/[A-Za-z0-9_$]/.test(cond[i - 1] ?? ' ')) return cond.slice(0, i)
+  }
+  return cond
+}
+
+// Strips parentheses that wrap the whole condition: `((1))` reads as `1`.
+function unwrap(cond: string): string {
+  let c = cond.trim()
+  for (;;) {
+    if (!c.startsWith('(') || !c.endsWith(')')) return c
+    let depth = 0
+    let wraps = true
+    for (let i = 0; i < c.length; i++) {
+      if (c[i] === '(') depth++
+      else if (c[i] === ')') depth--
+      if (depth === 0 && i < c.length - 1) {
+        wraps = false
+        break
+      }
+    }
+    if (!wraps) return c
+    c = c.slice(1, -1).trim()
+  }
+}
+
+// WHERE conditions that keep every row: TRUE, a non-zero number, NOT 0 / FALSE, n = n, 1 > 0 …
+function alwaysTrue(cond: string): boolean {
+  const c = cond.trim()
+  if (!c) return false
+  if (/^(TRUE|[1-9]\d*(\.\d+)?|NOT\s+(0|FALSE|NULL))$/i.test(c)) return true
+  const cmp = /^(\S+)\s*(=|>=|<=|<=>)\s*(\S+)$/.exec(c)
+  if (cmp && cmp[1] === cmp[3]) return true
+  const num = /^(-?\d+(?:\.\d+)?)\s*(>|<|>=|<=|<>|!=)\s*(-?\d+(?:\.\d+)?)$/.exec(c)
+  if (num) {
+    const a = Number(num[1]), b = Number(num[3])
+    return ({ '>': a > b, '<': a < b, '>=': a >= b, '<=': a <= b, '<>': a !== b, '!=': a !== b } as Record<string, boolean>)[num[2]!] ?? false
+  }
+  return false
+}
+
+
+export function classifyStatement(sql: string, database?: string): Classified {
+  if (!readGuard(sql)) return { kind: 'read' }
+  const st = structure(sql)
+  if ('refused' in st) return { kind: 'refused', reason: st.refused }
+  const { words, body } = st
+  const verb = words[0]
+  if (!verb || !WRITE_VERBS.has(verb)) return { kind: 'refused', reason: readGuard(sql)! }
+  const isGrant = verb === 'GRANT' || verb === 'REVOKE'
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i]!
+    if (NEVER_IN_WRITE.has(w) && !(isGrant && PRIVILEGE_WORDS.has(w))) return { kind: 'refused', reason: `Not sent: it uses ${w}, which the console never runs (files, session or server control).` }
+    if (w === 'SHUTDOWN' && !isGrant) return { kind: 'refused', reason: 'Not sent: SHUTDOWN controls the server.' }
+    // `LOCK TABLES` / `START TRANSACTION` / `SET …` as their own statements are never write verbs, but
+    // may hide inside procedures' bodies or events.
+    if ((w === 'START' && words[i + 1] === 'TRANSACTION') || (w === 'LOCK' && (words[i + 1] === 'TABLES' || words[i + 1] === 'TABLE') && verb !== 'GRANT' && verb !== 'REVOKE')) return { kind: 'refused', reason: `Not sent: ${w} ${words[i + 1]} controls the session.` }
+  }
+  // An object owned by another account runs later with that account's rights.
+  if (/\bDEFINER\s*=/i.test(body)) return { kind: 'refused', reason: 'Not sent: DEFINER = … makes the object run as another account; leave it out.' }
+  const objects = OBJECTS[verb]
+  if (objects) {
+    const object = words.slice(1).find(w => !OBJECT_MODIFIERS.has(w))
+    if (!object || !objects.has(object)) {
+      const routine = object && ['PROCEDURE', 'FUNCTION', 'TRIGGER', 'EVENT', 'AGGREGATE'].includes(object)
+      return { kind: 'refused', reason: routine ? `Not sent: ${object === 'EVENT' ? 'an' : 'a'} ${object.toLowerCase()} runs later without a prompt; create or change it with a migration tool.` : `Not sent: the console doesn't ${verb} ${object ?? 'that'} (only ${[...objects].join(', ')}).` }
+    }
+  }
+  // Table options that put data on the server's disk or in another server.
+  if ((verb === 'CREATE' || verb === 'ALTER') && words.some(w => w === 'DIRECTORY' || w === 'CONNECTION')) {
+    return { kind: 'refused', reason: 'Not sent: DATA / INDEX DIRECTORY and CONNECTION place a table on the server\'s disk or another server.' }
+  }
+  // The server's own tables (accounts, privileges) are never written, whether named or selected.
+  if (database && SYSTEM_SCHEMAS.includes(database.toLowerCase())) return { kind: 'refused', reason: `Not sent: ${database} is a system schema; the console never writes to it.` }
+  const plain = decomment(sql) ?? sql
+  if (/^\s*(?:CREATE|DROP|ALTER)\s+(?:DATABASE|SCHEMA)\s+(?:IF\s+(?:NOT\s+)?EXISTS\s+)?`?(mysql|sys|performance_schema|information_schema)`?\s*$/i.test(plain.replace(/[\s;]+$/, ''))) {
+    return { kind: 'refused', reason: 'Not sent: the console never changes a system schema.' }
+  }
+  if (SYSTEM_REF.test(plain)) return { kind: 'refused', reason: `Not sent: it names a system schema (${SYSTEM_SCHEMAS.join(', ')}); the console never writes to them.` }
+  // Optimizer hints like /*+ SET_VAR(foreign_key_checks=OFF) */ change how the write runs.
+  if (/\/\*\+/.test(sql)) return { kind: 'refused', reason: 'Not sent: optimizer hints (/*+ … */) can change session settings for the write; remove them.' }
+  // The warning counts only a WHERE at the statement's own level, and one that filters nothing.
+  const at = topLevelWhere(body)
+  const cond = at < 0 ? '' : unwrap(cutTail(body.slice(at + 5)))
+  const filtersNothing = at >= 0 && alwaysTrue(cond)
+  const noWhere = (verb === 'UPDATE' || verb === 'DELETE') && (at < 0 || filtersNothing)
+  const NAME = '(?:`[^`]+`|[A-Za-z_][A-Za-z0-9_$]*)'
+  const callRe = new RegExp(`(\\bINTO\\s+)?(${NAME}(?:\\s*\\.\\s*${NAME})?)\\s*\\(`, 'gi')
+  const calls = [...new Set([...plain.matchAll(callRe)].filter(x => !x[1]).map(x => x[2]!.replace(/\s+/g, '').replace(/`/g, '')).filter(n => n.includes('.') || !BUILTINS.has(n.toUpperCase())))]
+  const realCalls = verb === 'CALL' ? calls.filter((_, i) => i > 0) : calls
+  return { kind: 'write', verb, noWhere, calls: realCalls, ddl: DDL_VERBS.has(verb) || verb === 'CALL' }
 }
 
 // ---- running ----
@@ -228,6 +424,20 @@ export function mysqlScript(sql: string, server: DbServer): string {
     'START TRANSACTION READ ONLY;',
     sql.replace(/[\s;]+$/, '') + ';',
     'ROLLBACK;',
+    '',
+  ].join('\n')
+}
+
+// The script for a write the person approved: the same pinned sql_mode, one transaction, and the
+// number of rows it changed. If the statement fails, mysql stops before COMMIT and the server
+// rolls the transaction back when the connection closes.
+export function mysqlWriteScript(sql: string): string {
+  return [
+    "SET SESSION sql_mode = REPLACE(REPLACE(@@SESSION.sql_mode, 'NO_BACKSLASH_ESCAPES', ''), 'ANSI_QUOTES', '');",
+    'START TRANSACTION;',
+    sql.replace(/[\s;]+$/, '') + ';',
+    'SELECT ROW_COUNT() AS affected_rows;',
+    'COMMIT;',
     '',
   ].join('\n')
 }
@@ -432,3 +642,31 @@ export function credentialFingerprint(s: DbServer): string {
 
 // Text as a prompt draws it: printable ASCII and newlines only, anything else as \\uXXXX.
 export const asciiView = (t: string) => t.replace(/[^\x20-\x7e\n]/g, c => '\\u' + c.charCodeAt(0).toString(16).padStart(4, '0'))
+
+// The rows a text takes at a width: its lines, each cut into width-long pieces.
+export function wrapRows(text: string, width: number): string[] {
+  const w = Math.max(10, width)
+  const out: string[] = []
+  for (const line of text.split('\n')) {
+    if (!line) out.push('')
+    for (let i = 0; i < line.length; i += w) out.push(line.slice(i, i + w))
+  }
+  return out
+}
+
+// From offset `from` in an ASCII text, the rows that fit `height` rows of `width` columns, and the
+// offset just after the last character shown. Reading moves only forward, one shown page at a time.
+export function pageFrom(text: string, from: number, width: number, height: number): { rows: string[]; end: number } {
+  const w = Math.max(10, width)
+  const rows: string[] = []
+  let i = Math.max(0, from)
+  while (rows.length < height && i < text.length) {
+    const nl = text.indexOf('\n', i)
+    const lineEnd = nl < 0 ? text.length : nl
+    const piece = text.slice(i, Math.min(lineEnd, i + w))
+    rows.push(piece)
+    i += piece.length
+    if (i === lineEnd && nl >= 0) i++
+  }
+  return { rows, end: i }
+}

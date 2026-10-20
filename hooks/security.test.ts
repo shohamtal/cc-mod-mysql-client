@@ -37,7 +37,8 @@ function world(on: On, servers: unknown[]) {
     const isMysql = e.argv[0] === '/bin/bash'
     return { value: { exitCode: 0, stdout: isMysql ? 'x\n1\n' : 'secret-from-command\n', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } } as any
   })
-  return { files, runs, mysql: () => runs.filter(r => r.argv[0] === '/bin/bash') }
+  const mysql = () => runs.filter(r => r.argv[0] === '/bin/bash')
+  return { files, runs, mysql, writes: () => mysql().filter(r => !(r.stdin ?? '').includes('READ ONLY')) }
 }
 
 describe('credentials', () => {
@@ -97,6 +98,109 @@ describe('credentials', () => {
     expect(credentialFingerprint(a)).not.toBe(credentialFingerprint({ ...a, host: 'evil.example' }))
     expect(credentialFingerprint(a)).not.toBe(credentialFingerprint({ ...a, passwordEnv: 'GITHUB_TOKEN' }))
     expect(credentialFingerprint(a)).not.toBe(credentialFingerprint({ ...a, mysqlPath: '/tmp/evil' }))
+  })
+})
+
+describe('writes', () => {
+  const open = async ($: any, servers: unknown[], on: any, rows = 44) => {
+    const w = world(on, servers)
+    await $.tool.call({ tool: TOOL, action: 'status', filepath: 'w.json' } as any)
+    const ui: any = await $.ui.mount({ ...PANE, props: { ...PANE.props, scroll: { offset: 0, bodyRows: rows } } })
+    return { w, ui }
+  }
+
+  test('a write opens a prompt and runs nothing; Run once sends exactly it, outside the read-only session', async ($, on) => {
+    const { w, ui } = await open($, [{ id: 'dev', name: 'Dev', host: 'db.dev', databases: ['app'] }], on)
+    await ui.post({ type: 'run', text: 'UPDATE users SET plan = 1 WHERE id = 7', row: 0 }, { in: 'editor' })
+    expect(await ui.find({ key: 'write-once' })).toBeDefined()
+    expect(w.mysql()).toEqual([])
+    await ui.press({ key: 'write-once' })
+    expect(w.mysql().length).toBe(1)
+    const script = w.mysql()[0]!.stdin!
+    expect(script).toContain('START TRANSACTION;\nUPDATE users SET plan = 1 WHERE id = 7;\nSELECT ROW_COUNT() AS affected_rows;\nCOMMIT;')
+    expect(script).not.toContain('READ ONLY')
+  })
+
+  test('reads still run in the read-only session, with no prompt', async ($, on) => {
+    const { w, ui } = await open($, [{ id: 'dev', name: 'Dev', host: 'db.dev', databases: ['app'] }], on)
+    await ui.post({ type: 'run', text: 'SELECT 1', row: 0 }, { in: 'editor' })
+    expect(await ui.find({ key: 'write-once' })).toBeUndefined()
+    expect(w.mysql()[0]!.stdin).toContain('START TRANSACTION READ ONLY;')
+  })
+
+  test('DDL opens the same prompt, warns it cannot be rolled back, and runs only on Run', async ($, on) => {
+    const { w, ui } = await open($, [{ id: 'dev', name: 'Dev', host: 'db.dev', databases: ['app'] }], on)
+    await ui.post({ type: 'run', text: 'DROP TABLE users', row: 0 }, { in: 'editor' })
+    expect(JSON.stringify(await ui.drawn())).toContain("can't be rolled back")
+    expect(w.mysql()).toEqual([])
+    await ui.press({ key: 'write-once' })
+    expect(w.writes()[0]!.stdin).toContain('\nDROP TABLE users;\n')
+  })
+
+  test('file and server control never prompt and never run', async ($, on) => {
+    const { w, ui } = await open($, [{ id: 'dev', name: 'Dev', host: 'db.dev', databases: ['app'] }], on)
+    await ui.post({ type: 'run', text: 'LOAD DATA LOCAL INFILE "/etc/passwd" INTO TABLE t', row: 0 }, { in: 'editor' })
+    expect(await ui.find({ key: 'write-once' })).toBeUndefined()
+    expect(w.mysql()).toEqual([])
+  })
+
+  test('production offers no session unlock; elsewhere it holds for the next write and ends with the entry', async ($, on) => {
+    const { w, ui } = await open($, [{ id: 'prd', name: 'Prod', host: 'db.prd', tag: 'production', databases: ['app'] }, { id: 'dev', name: 'Dev', host: 'db.dev', databases: ['app'] }], on)
+    await ui.post({ type: 'run', text: 'DELETE FROM t WHERE id = 1', row: 0 }, { in: 'editor' })
+    expect(await ui.find({ key: 'write-once' })).toBeDefined()
+    expect(await ui.find({ key: 'write-session' })).toBeUndefined()
+    await ui.press({ key: 'write-cancel' })
+    await ui.press({ key: 'server-menu' })
+    await ui.press({ key: 'pick:dev' })
+    await ui.post({ type: 'run', text: 'DELETE FROM t WHERE id = 1', row: 0 }, { in: 'editor' })
+    await ui.press({ key: 'write-session' })
+    await ui.post({ type: 'run', text: 'DELETE FROM t WHERE id = 2', row: 0 }, { in: 'editor' })
+    // Picking the server also loads its schema (a read); the writes are what matters here.
+    expect(w.writes().length).toBe(2)
+    // The agent repoints the unlocked entry: the unlock is gone.
+    w.files.set(`${BASE}/servers.json`, JSON.stringify({ servers: [{ id: 'dev', name: 'Dev', host: 'db.prd', databases: ['app'] }] }))
+    await ui.post({ type: 'run', text: 'DELETE FROM t WHERE id = 3', row: 0 }, { in: 'editor' })
+    expect(await ui.find({ key: 'write-once' })).toBeDefined()
+    expect(w.writes().length).toBe(2)
+  })
+
+  test('a long statement must be read to the end before Run appears', async ($, on) => {
+    const { w, ui } = await open($, [{ id: 'dev', name: 'Dev', host: 'db.dev', databases: ['app'] }], on, 20)
+    const ids = Array.from({ length: 400 }, (_, i) => i).join(',\n  ')
+    await ui.post({ type: 'run', text: `DELETE FROM t WHERE id IN (\n  ${ids}\n) OR 1 = 1`, row: 0 }, { in: 'editor' })
+    let presses = 0
+    while (await ui.find({ key: 'sql-next' })) {
+      expect(await ui.find({ key: 'write-once' })).toBeUndefined()
+      await ui.press({ key: 'sql-next' })
+      presses++
+    }
+    expect(presses).toBeGreaterThan(5)
+    expect(await ui.find({ key: 'write-once' })).toBeDefined()
+    expect(w.mysql()).toEqual([])
+  })
+
+  test('without a known pane size there are no run buttons', async ($, on) => {
+    const w = world(on, [{ id: 'dev', name: 'Dev', host: 'db.dev', databases: ['app'] }])
+    await $.tool.call({ tool: TOOL, action: 'status', filepath: 'w.json' } as any)
+    const ui: any = await $.ui.mount(PANE)
+    await ui.post({ type: 'run', text: 'DELETE FROM t WHERE id = 1', row: 0 }, { in: 'editor' })
+    expect(await ui.find({ key: 'write-once' })).toBeUndefined()
+    expect(w.mysql()).toEqual([])
+  })
+
+  test('a write naming a system schema never prompts or runs', async ($, on) => {
+    const { w, ui } = await open($, [{ id: 'dev', name: 'Dev', host: 'db.dev', databases: ['app'] }], on)
+    await ui.post({ type: 'run', text: "UPDATE mysql.user SET authentication_string = '' WHERE user = 'root'", row: 0 }, { in: 'editor' })
+    expect(await ui.find({ key: 'write-once' })).toBeUndefined()
+    expect(w.mysql()).toEqual([])
+  })
+
+  test('the agent tool cannot run or unlock a write', async ($, on) => {
+    const w = world(on, [{ id: 'dev', name: 'Dev', host: 'db.dev', databases: ['app'] }])
+    await $.tool.call({ tool: TOOL, action: 'open', filepath: 'agent.json' } as any)
+    w.files.set(`${BASE}/sessions/agent.json`, JSON.stringify({ server: 'dev', database: 'app', cursorRow: 0, query: 'DELETE FROM t' }))
+    await $.tool.call({ tool: TOOL, action: 'status', filepath: 'agent.json' } as any)
+    expect(w.mysql()).toEqual([])
   })
 })
 
