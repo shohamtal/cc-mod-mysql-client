@@ -1,0 +1,21 @@
+{
+  "name": "sql-console",
+  "version": "0.1.0",
+  "description": "Read-only SQL (MySQL) console in a Claude Code side pane: Claude writes queries, you run them; schema-aware autocomplete.",
+  "types": "./types/index.d.ts",
+  "author": {
+    "name": "shohamtal"
+  },
+  "license": "MIT",
+  "keywords": [
+    "sql",
+    "mysql",
+    "mariadb",
+    "database",
+    "console",
+    "read-only",
+    "pane",
+    "mod"
+  ],
+  "homepage": "https://github.com/shohamtal/cc-mod-sql-console"
+}

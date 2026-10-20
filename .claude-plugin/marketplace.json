@@ -1,0 +1,16 @@
+{
+  "name": "cc-mod-sql-console",
+  "owner": {
+    "name": "shohamtal"
+  },
+  "metadata": {
+    "description": "A read-only MySQL console for Claude Code, as a side-pane mod."
+  },
+  "plugins": [
+    {
+      "name": "sql-console",
+      "source": "./",
+      "description": "Read-only SQL (MySQL) console in a Claude Code side pane: Claude writes queries, you run them; schema-aware autocomplete."
+    }
+  ]
+}
