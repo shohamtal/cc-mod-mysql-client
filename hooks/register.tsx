@@ -363,16 +363,20 @@ async function attach($: EngineInterface, file?: string, config?: string): Promi
 
 async function saveSession($: EngineInterface, extra: Record<string, unknown> = {}) {
   if (!sessionFile) return
-  const old = (await readJson($, sessionFile)) ?? {}
-  const next = {
-    ...old,
-    server: await read($, server),
-    database: await read($, database),
-    cursorRow: await read($, cursorRow),
-    query: await read($, query),
-    ...extra,
+  const file = sessionFile
+  const old = (await readJson($, file)) ?? {}
+  // Someone else (the agent, another editor) wrote the file since this pane last read or wrote it:
+  // their editor fields win, only `extra` (a run's lastRun) is merged in, and the pane reloads them.
+  const mtime = await $.fs.stat(file).then(s => s.mtimeMs, () => undefined)
+  const external = mtime !== undefined && seen[file] !== undefined && mtime !== seen[file]
+  const mine = external
+    ? {}
+    : { server: await read($, server), database: await read($, database), cursorRow: await read($, cursorRow), query: await read($, query) }
+  await write($, file, JSON.stringify({ ...old, ...mine, ...extra }, null, 2) + '\n')
+  if (external) {
+    delete seen[file]
+    await sync($)
   }
-  await write($, sessionFile, JSON.stringify(next, null, 2) + '\n')
 }
 
 function scheduleSave($: EngineInterface) {
