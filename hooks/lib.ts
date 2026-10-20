@@ -429,3 +429,6 @@ export function credentialSource(s: DbServer): string | undefined {
 export function credentialFingerprint(s: DbServer): string {
   return JSON.stringify([s.host, s.port ?? 3306, s.https ?? false, s.username ?? '', s.passwordCommand ?? null, s.passwordEnv ?? null, s.password ? 'file' : null, s.mysqlPath ?? null])
 }
+
+// Text as a prompt draws it: printable ASCII and newlines only, anything else as \\uXXXX.
+export const asciiView = (t: string) => t.replace(/[^\x20-\x7e\n]/g, c => '\\u' + c.charCodeAt(0).toString(16).padStart(4, '0'))

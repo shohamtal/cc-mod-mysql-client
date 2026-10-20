@@ -27,6 +27,7 @@ import {
   PASTE_COMMANDS,
   credentialSource,
   credentialFingerprint,
+  asciiView,
 } from './lib'
 
 const PANE = 'sql'
@@ -798,8 +799,8 @@ export const register: Register = on => {
         </Text>
         {ask ? (
           <Box flexDirection="column" borderStyle="round" borderColor="#d7a700" backgroundColor="#1e1e1e" paddingX={1}>
-            <Text bold color="warning">{`Connect to ${ask.serverName} with these credentials?`}</Text>
-            <Text>{`${ask.target} gets ${ask.source}.`}</Text>
+            <Text bold color="warning" wrap="truncate-end">{`Connect to ${asciiView(ask.serverName)} with these credentials?`}</Text>
+            <Text wrap="wrap">{asciiView(`${ask.target} gets ${ask.source}.`)}</Text>
             <Text dimColor>Asked once per server, and again whenever its host or credential source changes in the config.</Text>
             <Box flexDirection="row" gap={2} height={1}>
               <Button
