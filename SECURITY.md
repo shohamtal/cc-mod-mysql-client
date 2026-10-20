@@ -18,7 +18,9 @@
   3. **Always refused:**
      - files (`LOAD`, `INTO OUTFILE` / `DUMPFILE`, `LOAD_FILE`)
      - session and server control (`SET`, transactions, locks, `KILL`, `SHUTDOWN`, plugins)
-     - system schemas, `BEGIN … END` bodies, `/*! */`, optimizer hints in writes, multiple statements, mysql client commands
+     - server objects (`INSTANCE`, tablespaces, resource groups, `SERVER`), `SONAME`, `DATA` / `INDEX DIRECTORY`, `CONNECTION`
+     - creating or altering procedures, functions, triggers and events; `DEFINER = …`
+     - system schemas, `/*! */`, optimizer hints in writes, multiple statements, mysql client commands
   4. **Client:** `mysql` runs with `--skip-system-command` and `--defaults-file` (its own option file only, never `~/.my.cnf`). The session `sql_mode` drops `NO_BACKSLASH_ESCAPES` and `ANSI_QUOTES`.
 - **Credentials ask first:** a server with a user needs the person's OK once before its first query, keyed to its host and credential source; a `passwordCommand` never runs before that.
 

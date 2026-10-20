@@ -204,14 +204,25 @@ export function readGuard(sql: string): string | undefined {
 // files (LOAD, OUTFILE, DUMPFILE, LOAD_FILE), controls the session or server (SET, transactions,
 // locks, KILL, SHUTDOWN, plugins), or hides more than the one statement the prompt shows.
 const WRITE_VERBS = new Set(['INSERT', 'UPDATE', 'DELETE', 'REPLACE', 'CREATE', 'ALTER', 'DROP', 'TRUNCATE', 'RENAME', 'GRANT', 'REVOKE', 'CALL'])
-// Statements MySQL commits at once: they can't be rolled back.
+// Statements MySQL commits at once: they can't be rolled back. A CALL may commit inside, too.
 const DDL_VERBS = new Set(['CREATE', 'ALTER', 'DROP', 'TRUNCATE', 'RENAME', 'GRANT', 'REVOKE'])
 // Words that stay refused inside any write.
 const NEVER_IN_WRITE = new Set([
   'LOAD', 'OUTFILE', 'DUMPFILE', 'LOAD_FILE', 'SYS_EXEC', 'SYS_EVAL', 'HANDLER', 'KILL', 'COMMIT', 'ROLLBACK',
   'SAVEPOINT', 'UNLOCK', 'PREPARE', 'DEALLOCATE', 'DELIMITER', 'INSTALL', 'UNINSTALL', 'CLONE', 'RESTART',
-  'IMPORT', 'GET_LOCK', 'RELEASE_LOCK', 'RELEASE_ALL_LOCKS', 'DBLINK', 'DBLINK_EXEC',
+  'IMPORT', 'GET_LOCK', 'RELEASE_LOCK', 'RELEASE_ALL_LOCKS', 'DBLINK', 'DBLINK_EXEC', 'SONAME',
 ])
+// The objects CREATE / ALTER / DROP / RENAME may name. Routines, triggers and events run later
+// without a prompt, so they can be dropped here but not created or changed; server objects
+// (INSTANCE, TABLESPACE, SERVER, RESOURCE GROUP, …) are never touched.
+const OBJECTS: Record<string, Set<string>> = {
+  CREATE: new Set(['TABLE', 'INDEX', 'VIEW', 'DATABASE', 'SCHEMA', 'USER', 'ROLE']),
+  ALTER: new Set(['TABLE', 'VIEW', 'DATABASE', 'SCHEMA', 'USER']),
+  DROP: new Set(['TABLE', 'INDEX', 'VIEW', 'DATABASE', 'SCHEMA', 'USER', 'ROLE', 'PROCEDURE', 'FUNCTION', 'TRIGGER', 'EVENT']),
+  RENAME: new Set(['TABLE', 'USER']),
+}
+// Words between the verb and the object type: CREATE OR REPLACE ALGORITHM = MERGE SQL SECURITY INVOKER VIEW …
+const OBJECT_MODIFIERS = new Set(['OR', 'REPLACE', 'TEMPORARY', 'UNIQUE', 'FULLTEXT', 'SPATIAL', 'ONLINE', 'OFFLINE', 'ALGORITHM', 'UNDEFINED', 'MERGE', 'TEMPTABLE', 'SQL', 'SECURITY', 'INVOKER', 'DEFINER'])
 // Privilege names a GRANT / REVOKE may list that are refused elsewhere.
 const PRIVILEGE_WORDS = new Set(['SHUTDOWN', 'RELOAD', 'PROCESS', 'FILE', 'EXECUTE', 'LOCK', 'REPLICATION', 'SUPER', 'EVENT', 'TRIGGER', 'CREATE', 'ALTER', 'DROP', 'INSERT', 'UPDATE', 'DELETE', 'INDEX', 'REFERENCES', 'USAGE'])
 
@@ -305,10 +316,19 @@ export function classifyStatement(sql: string, database?: string): Classified {
     // may hide inside procedures' bodies or events.
     if ((w === 'START' && words[i + 1] === 'TRANSACTION') || (w === 'LOCK' && (words[i + 1] === 'TABLES' || words[i + 1] === 'TABLE') && verb !== 'GRANT' && verb !== 'REVOKE')) return { kind: 'refused', reason: `Not sent: ${w} ${words[i + 1]} controls the session.` }
   }
-  // Statements that hold more statements (procedure, function, trigger and event bodies) can't be
-  // reviewed as one statement here; create them from a migration tool.
-  if (verb === 'CREATE' && /^\s*CREATE\s+(?:OR\s+REPLACE\s+)?(?:DEFINER\s*=\s*\S+\s+)?(?:PROCEDURE|FUNCTION|TRIGGER|EVENT)\b/i.test(body) && /\bBEGIN\b/i.test(body)) {
-    return { kind: 'refused', reason: 'Not sent: a body with BEGIN … END holds several statements; create it with a migration tool.' }
+  const objects = OBJECTS[verb]
+  if (objects) {
+    const object = words.slice(1).find(w => !OBJECT_MODIFIERS.has(w))
+    if (!object || !objects.has(object)) {
+      const routine = object && ['PROCEDURE', 'FUNCTION', 'TRIGGER', 'EVENT', 'AGGREGATE'].includes(object)
+      return { kind: 'refused', reason: routine ? `Not sent: a ${object.toLowerCase()} runs later without a prompt; create or change it with a migration tool.` : `Not sent: the console doesn't ${verb} ${object ?? 'that'} (only ${[...objects].join(', ')}).` }
+    }
+  }
+  // An object owned by another account runs later with that account's rights.
+  if (/\bDEFINER\s*=/i.test(body)) return { kind: 'refused', reason: 'Not sent: DEFINER = … makes the object run as another account; leave it out.' }
+  // Table options that put data on the server's disk or in another server.
+  if ((verb === 'CREATE' || verb === 'ALTER') && words.some(w => w === 'DIRECTORY' || w === 'CONNECTION')) {
+    return { kind: 'refused', reason: 'Not sent: DATA / INDEX DIRECTORY and CONNECTION place a table on the server\'s disk or another server.' }
   }
   // The server's own tables (accounts, privileges) are never written, whether named or selected.
   if (database && SYSTEM_SCHEMAS.includes(database.toLowerCase())) return { kind: 'refused', reason: `Not sent: ${database} is a system schema; the console never writes to it.` }
@@ -328,7 +348,7 @@ export function classifyStatement(sql: string, database?: string): Classified {
   const callRe = new RegExp(`(\\bINTO\\s+)?(${NAME}(?:\\s*\\.\\s*${NAME})?)\\s*\\(`, 'gi')
   const calls = [...new Set([...plain.matchAll(callRe)].filter(x => !x[1]).map(x => x[2]!.replace(/\s+/g, '').replace(/`/g, '')).filter(n => n.includes('.') || !BUILTINS.has(n.toUpperCase())))]
   const realCalls = verb === 'CALL' ? calls.filter((_, i) => i > 0) : calls
-  return { kind: 'write', verb, noWhere, calls: realCalls, ddl: DDL_VERBS.has(verb) }
+  return { kind: 'write', verb, noWhere, calls: realCalls, ddl: DDL_VERBS.has(verb) || verb === 'CALL' }
 }
 
 // ---- running ----

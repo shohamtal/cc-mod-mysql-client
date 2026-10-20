@@ -47,7 +47,9 @@ Unlocks live in memory only: no file the console reads can unlock writes, and ag
 - **Files:** `LOAD DATA`, `INTO OUTFILE` / `DUMPFILE`, `LOAD_FILE`. These read or write files on your machine or the server's.
 - **Session and server control:** `SET`, transaction commands, `LOCK TABLES`, `KILL`, `SHUTDOWN`, `INSTALL PLUGIN`, `HANDLER`, `PREPARE`.
 - **System schemas:** direct writes to `mysql`, `sys`, `performance_schema` or `information_schema`. Use `GRANT` / `CREATE USER` instead.
-- **Anything that could run more than the statement shown:** more than one statement, procedure, function, trigger or event bodies with `BEGIN … END` (create those with a migration tool), `/*! */` executable comments, optimizer hints, and mysql client commands (`\!`, `system`, `source`, …).
+- **Server objects and native code:** `ALTER INSTANCE`, tablespaces, resource groups, `CREATE SERVER`, `SONAME` functions, and the table options `DATA DIRECTORY`, `INDEX DIRECTORY` and `CONNECTION`.
+- **Anything that runs later or as someone else:** creating or changing procedures, functions, triggers and events (use a migration tool; dropping them is a normal write), and `DEFINER = …`.
+- **Anything that could run more than the statement shown:** more than one statement, `/*! */` executable comments, optimizer hints, and mysql client commands (`\!`, `system`, `source`, …).
 
 **The client:**
 - `mysql` runs with `--skip-system-command`, and with `--defaults-file` set to the mod's own option file, so `~/.my.cnf` and `/etc/my.cnf` are never read.

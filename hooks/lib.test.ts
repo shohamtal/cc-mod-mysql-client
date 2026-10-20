@@ -136,7 +136,7 @@ describe('writes the person can unlock', () => {
       "GRANT SELECT, SHUTDOWN ON app.* TO 'r'@'%'", "REVOKE ALL ON app.* FROM 'r'@'%'", 'CREATE INDEX i ON t (a)', 'DROP DATABASE scratch',
       'ALTER TABLE t ADD COLUMN c INT, LOCK=NONE']) expect(classifyStatement(sql)).toMatchObject({ kind: 'write', ddl: true })
     expect(classifyStatement('REPLACE INTO t VALUES (1)')).toMatchObject({ kind: 'write', ddl: false })
-    expect(classifyStatement('CALL app.cleanup(7)')).toMatchObject({ kind: 'write', verb: 'CALL', ddl: false })
+    expect(classifyStatement('CALL app.cleanup(7)')).toMatchObject({ kind: 'write', verb: 'CALL', ddl: true })
   })
 
   test('what touches files, controls the session or server, or hides more statements stays refused, approved or not', async () => {
@@ -158,6 +158,20 @@ describe('writes the person can unlock', () => {
 })
 
 describe('security review of the write toggle', () => {
+  test('DDL reaches only tables, indexes, views, databases, users and roles; routines and server objects stay refused', async () => {
+    for (const sql of [
+      "CREATE FUNCTION f RETURNS STRING SONAME 'udf.so'", 'CREATE PROCEDURE p() SET GLOBAL max_connections = 1', 'CREATE EVENT e ON SCHEDULE EVERY 1 HOUR DO FLUSH LOGS',
+      'ALTER EVENT e DO RESET MASTER', 'CREATE TRIGGER tr BEFORE INSERT ON t FOR EACH ROW SET NEW.a = 1', 'CREATE AGGREGATE FUNCTION f RETURNS INT SONAME "x.so"',
+      'ALTER INSTANCE DISABLE INNODB REDO_LOG', 'CREATE RESOURCE GROUP g TYPE = USER', "CREATE TABLESPACE ts ADD DATAFILE '/tmp/ts.ibd'",
+      "CREATE TABLE t (a INT) DATA DIRECTORY = '/tmp'", "ALTER TABLE t INDEX DIRECTORY = '/tmp'", "CREATE TABLE t (a INT) ENGINE=FEDERATED CONNECTION='mysql://u@h/d/t'",
+      "CREATE SERVER s FOREIGN DATA WRAPPER mysql OPTIONS (HOST 'h')", "CREATE DEFINER = 'root'@'localhost' VIEW v AS SELECT 1", 'CREATE DEFINER=root@localhost VIEW v AS SELECT 1',
+      'CREATE SPATIAL REFERENCE SYSTEM 1 NAME "x"', 'CREATE LOGFILE GROUP g ADD UNDOFILE "u"', 'DROP TABLESPACE ts', 'RENAME x TO y',
+    ]) expect(classifyStatement(sql, 'app').kind).toBe('refused')
+    for (const sql of ['CREATE TABLE IF NOT EXISTS t (a INT)', 'CREATE TEMPORARY TABLE t (a INT)', 'CREATE UNIQUE INDEX i ON t (a)', 'CREATE OR REPLACE ALGORITHM = MERGE SQL SECURITY INVOKER VIEW v AS SELECT 1',
+      'ALTER TABLE t ADD COLUMN b INT', 'DROP PROCEDURE IF EXISTS p', 'DROP EVENT e', 'CREATE USER u IDENTIFIED BY "x"', 'CREATE ROLE r', 'RENAME TABLE a TO b', 'TRUNCATE t', 'CREATE DATABASE d',
+    ]) expect(classifyStatement(sql, 'app')).toMatchObject({ kind: 'write', ddl: true })
+    expect(classifyStatement('CALL p()', 'app')).toMatchObject({ kind: 'write', verb: 'CALL', ddl: true })
+  })
   test('system schemas are never written, named, quoted or selected', async () => {
     for (const sql of ["UPDATE mysql.user SET authentication_string = '' WHERE user = 'x'", 'UPDATE `mysql`.`user` SET a = 1 WHERE b = 2',
       'UPDATE performance_schema.setup_instruments SET ENABLED = "NO" WHERE NAME LIKE "%"', 'DELETE FROM sys . x WHERE a = 1',

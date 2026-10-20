@@ -2,7 +2,7 @@
 
 ## 0.2.0
 
-- **Writes, locked by default:** any data, schema, privilege or `CALL` statement opens a prompt with the exact statement. It shows ASCII only, is paged to the pane, warns on a missing `WHERE` and on non-undoable DDL, and names non-built-in function calls. **Run this statement once** or **Unlock for this session** (never on production, tied to the server entry). 🔒 / 🔓 shows the lock. Files, session or server control, system schemas, `BEGIN … END` bodies and multiple statements stay refused.
+- **Writes, locked by default:** any data, schema, privilege or `CALL` statement opens a prompt with the exact statement. It shows ASCII only, is paged to the pane, warns on a missing `WHERE` and on non-undoable DDL, and names non-built-in function calls. **Run this statement once** or **Unlock for this session** (never on production, tied to the server entry). 🔒 / 🔓 shows the lock. DDL covers tables, indexes, views, databases, users and roles. Files, session or server control, server objects, `SONAME`, creating routines, triggers or events, `DEFINER`, system schemas and multiple statements stay refused.
 - **Credentials:** a server with credentials asks once before first use.
 - **Client options:** `mysql` reads only the mod's own option file.
 - **Agent tool:** it stays inside the mod's folder.
