@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.2.4
+
+Fixes from an external review, each reproduced by a test that fails on 0.2.3:
+- **A query still running when the console switches files** is recorded in its own console's result and session files, not the new one's.
+- **Dragging the result pans at every step**, not only the first. A click survives a redraw between press and release.
+- **ctrl+x copies the cut text**: the copy now travels on the cut's own edit post, since a second post in one frame replaced it.
+- **Edits typed just before a console switch** are saved to the old console.
+- **The pane's own save is never taken for an outside change**, so it no longer closes an open write prompt, and two saves no longer overlap.
+- **An outside write in the same mtime tick** is noticed by its content.
+- **A session file with a JSON typo is never overwritten.** The pane says it can't save until the file is fixed.
+- **Smaller fixes:**
+  - The wheel over the editor's bottom rows scrolls the editor while a menu is open.
+  - A malformed result row no longer stops live updates.
+  - Allow on a credentials prompt that was already cancelled does nothing.
+  - Unlock re-checks whether the server became production since the prompt opened.
+
 ## 0.2.3
 
 - **A finished query no longer overwrites a newer session file:** when the agent or another editor writes the session file while a query runs (or before a delayed editor save), the file's query, cursor, server and database are kept, only `lastRun` is added, and the pane reloads them. A server or database you pick from the menu still wins. A change is detected by modification time or by content, so two writes in one time tick count too. An outside write that lands within the 250 ms after your last keystroke wins over that keystroke. Reported in the catalogue review.
