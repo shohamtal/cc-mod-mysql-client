@@ -1,16 +1,16 @@
 {
-  "name": "cc-mod-sql-console",
+  "name": "cc-mod-mysql-client",
   "owner": {
     "name": "shohamtal"
   },
   "metadata": {
-    "description": "A MySQL console for Claude Code, as a side-pane mod: read-only by default, writes run after you approve them."
+    "description": "A MySQL client and SQL editor for Claude Code, as a side-pane mod."
   },
   "plugins": [
     {
-      "name": "sql-console",
+      "name": "mysql-client",
       "source": "./",
-      "description": "MySQL console in a Claude Code side pane: Claude writes queries, you run them. Read-only by default; writes (data, schema, privileges) run only after you approve them. Schema-aware autocomplete."
+      "description": "MySQL client and SQL editor in a Claude Code side pane: Claude writes the query, you run it and see the results as a table. A database client with schema-aware autocomplete and a server menu. Read-only by default; writes run only after you approve them."
     }
   ]
 }

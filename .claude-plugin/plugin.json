@@ -1,21 +1,23 @@
 {
-  "name": "sql-console",
-  "version": "0.2.0",
-  "description": "MySQL console in a Claude Code side pane: Claude writes queries, you run them. Read-only by default; writes (data, schema, privileges) run only after you approve them. Schema-aware autocomplete.",
+  "name": "mysql-client",
+  "version": "0.2.1",
+  "description": "MySQL client and SQL editor in a Claude Code side pane: Claude writes the query, you run it and see the results as a table. A database client with schema-aware autocomplete and a server menu. Read-only by default; writes run only after you approve them.",
   "types": "./types/index.d.ts",
   "author": {
     "name": "shohamtal"
   },
   "license": "MIT",
   "keywords": [
-    "sql",
     "mysql",
-    "mariadb",
-    "database",
+    "sql",
+    "mysql-client",
+    "sql-client",
+    "sql-editor",
+    "database-client",
+    "query",
     "console",
     "pane",
-    "mod",
-    "safe-writes"
+    "mod"
   ],
-  "homepage": "https://github.com/shohamtal/cc-mod-sql-console"
+  "homepage": "https://github.com/shohamtal/cc-mod-mysql-client"
 }

@@ -1,0 +1,7 @@
+{
+  "servers": [
+    { "id": "local", "name": "Local demo", "host": "127.0.0.1", "port": 3307, "username": "demo", "passwordEnv": "SQL_DEMO_PASSWORD", "tag": "local", "databases": ["shop", "analytics"] },
+    { "id": "staging", "name": "Staging (example)", "host": "db.staging.example.com", "tag": "staging", "databases": ["shop"] },
+    { "id": "production", "name": "Production (example)", "host": "db.example.com", "tag": "production", "databases": ["shop"] }
+  ]
+}

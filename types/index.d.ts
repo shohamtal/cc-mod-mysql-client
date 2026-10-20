@@ -33,7 +33,7 @@ export type SqlSchema = { dbs: string[]; tables: Record<string, string[]>; cols:
 
 declare module 'claude-code' {
   interface PluginState {
-    'sql-console': {
+    'mysql-client': {
       query: string
       rev: number
       cursorRow: number

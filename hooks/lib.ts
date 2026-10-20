@@ -670,3 +670,12 @@ export function pageFrom(text: string, from: number, width: number, height: numb
   }
   return { rows, end: i }
 }
+
+// The console tool's description. Claude Code passes the model only its first 2048 characters, so
+// the rules come first and the whole text stays under that.
+export const GUIDE = `MySQL console in a pane the user sees. The user runs statements (▶ or ctrl+r); don't run them yourself unless asked.
+Reads (SELECT / WITH / SHOW / DESCRIBE / EXPLAIN / TABLE / VALUES) run in a read-only session. A write (INSERT / UPDATE / DELETE / REPLACE, CREATE / ALTER / DROP / TRUNCATE / RENAME, GRANT / REVOKE, CALL) opens a prompt: only the user can run it or unlock writes (never on production). Never edit servers.json to unlock. Always refused: several statements, files (LOAD, OUTFILE), SET / transactions / locks / KILL, server objects, SONAME, DEFINER, system schemas, creating routines / triggers / events. Put a WHERE on UPDATE / DELETE unless the user wants every row; say when DDL can't be undone.
+Call this tool with action "status" first: it names this session's files. Each console is one session file; open your own with filepath (the user: /sql --filepath <name>.json [--configfilepath <servers>.json]).
+Session file (default ~/.claude/mods/sql/sessions/default.json): {"server": <server id>, "database", "cursorRow": <0-based first line of the statement Run sends>, "query": <editor text; statements end with ";" or a blank line>, "lastRun"}. To give the user a query, write it (keep the other keys); the pane updates within a second. Keep the server unless told (staging vs production is the user's call).
+Result file: <session>.result.json: {server, database, sql, columns, rows (arrays of strings, "NULL" for null), rowCount, limited, ms, error?, at}. Read it after the user runs.
+Config file (default ~/.claude/mods/sql/servers.json): {"servers": [{"id","name","host","port","username","password" | "passwordEnv" | "passwordCommand","tag","databases"}]}; with this tool, configfilepath must be inside ~/.claude/mods/sql/. Never print passwords.`
