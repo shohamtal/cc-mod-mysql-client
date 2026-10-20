@@ -153,13 +153,16 @@ describe('security review of the write toggle', () => {
   test('system schemas are never written, named, quoted or selected', async () => {
     for (const sql of ["UPDATE mysql.user SET authentication_string = '' WHERE user = 'x'", 'UPDATE `mysql`.`user` SET a = 1 WHERE b = 2',
       'UPDATE performance_schema.setup_instruments SET ENABLED = "NO" WHERE NAME LIKE "%"', 'DELETE FROM sys . x WHERE a = 1',
-      'INSERT INTO t SELECT * FROM information_schema.tables WHERE 0']) expect(classifyStatement(sql).kind).toBe('refused')
+      'INSERT INTO t SELECT * FROM information_schema.tables WHERE 0', 'UPDATE mysql/**/.user SET x=1 WHERE id=1',
+      'UPDATE mysql#c\n.user SET x=1 WHERE id=1', 'UPDATE mysql-- c\n.user SET x=1 WHERE id=1', 'UPDATE `mysql` /* x */ . `user` SET a = 1 WHERE b = 2',
+    ]) expect(classifyStatement(sql).kind).toBe('refused')
     expect(classifyStatement('DELETE FROM user WHERE id = 1', 'mysql').kind).toBe('refused')
     expect(classifyStatement('DELETE FROM user WHERE id = 1', 'app').kind).toBe('write')
   })
   test('the no-WHERE warning ignores a WHERE inside parentheses, and WHERE 1 / TRUE / 1=1', async () => {
     expect(classifyStatement('UPDATE t SET a = (SELECT 1 FROM u WHERE u.id = 2)')).toMatchObject({ noWhere: true })
-    for (const w of ['1', 'TRUE', '1=1', '1 = 1', "'1'='1'"]) expect(classifyStatement(`DELETE FROM t WHERE ${w}`)).toMatchObject({ noWhere: true })
+    for (const w of ['1', 'TRUE', '1=1', '1 = 1', "'1'='1'", '(1)', '((1))', '2', '1>0', 'NOT 0', 'id = id', '1 LIMIT 5', '(1) ORDER BY id']) expect(classifyStatement(`DELETE FROM t WHERE ${w}`)).toMatchObject({ noWhere: true })
+    for (const w of ['id = 1', '0 < id', 'a > b', '(id = 1)', '(a = 1) AND (b = 2)', 'id IN (1, 2)']) expect(classifyStatement(`DELETE FROM t WHERE ${w}`)).toMatchObject({ noWhere: false })
     expect(classifyStatement('DELETE FROM t WHERE id IN (SELECT id FROM u WHERE x = 1)')).toMatchObject({ noWhere: false })
   })
   test('optimizer hints are refused in writes', async () => {
@@ -168,5 +171,13 @@ describe('security review of the write toggle', () => {
   test('calls to functions that may be stored functions are named for the prompt', async () => {
     expect(classifyStatement("UPDATE t SET a = NOW(), b = CONCAT(a, 'x'), c = audit_log(a) WHERE id = 1")).toMatchObject({ calls: ['audit_log'] })
     expect(classifyStatement('DELETE FROM t WHERE id = app.next_id()')).toMatchObject({ calls: ['app.next_id'] })
+    expect(classifyStatement('INSERT INTO t (a, b) VALUES (1, 2)')).toMatchObject({ calls: [] })
+    expect(classifyStatement('INSERT INTO `orders` (a) VALUES (`audit`(1))')).toMatchObject({ calls: ['audit'] })
+    expect(classifyStatement("UPDATE t SET a = 'f(x)' WHERE id = 1")).toMatchObject({ calls: [] })
+  })
+  test('reads refuse hints that lift the time limit or change settings', async () => {
+    expect(readGuard('SELECT /*+ MAX_EXECUTION_TIME(0) */ * FROM t')).toBeDefined()
+    expect(readGuard('SELECT /*+ SET_VAR(sort_buffer_size = 1) */ * FROM t')).toBeDefined()
+    expect(readGuard('SELECT /*+ INDEX(t idx) */ * FROM t')).toBeUndefined()
   })
 })

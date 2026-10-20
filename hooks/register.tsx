@@ -791,7 +791,8 @@ export const register: Register = on => {
     const scrolled = await read($, editorScroll)
     const loading = (await read($, schemaLoading)) === current
     const sc = target ? ((await read($, schema)) ?? {})[serverKey(target)] : undefined
-    const cols = (e.props as any).bodyColumns ?? 100
+    const knownCols: number | undefined = (e.props as any).bodyColumns
+    const cols = knownCols ?? 100
     const targetFull = target ? (await readServers($)).find(x => x.id === target.id) : undefined
     const isProd = !!targetFull && (await isProduction($, targetFull))
     const isUnlocked = !!targetFull && (await isUnlockedNow($, targetFull))
@@ -807,7 +808,7 @@ export const register: Register = on => {
     const pageSize = rows - chrome
     const tooLong = sqlView.length > SQL_LIMIT
     // An unknown pane size can't be checked, so it counts as too small: no run buttons.
-    const tooSmall = isWritePrompt && (knownRows === undefined || pageSize < 3)
+    const tooSmall = isWritePrompt && (knownRows === undefined || knownCols === undefined || pageSize < 3)
     const shown = ask?.kind === 'write' && !tooLong && !tooSmall ? pageFrom(sqlView, ask.shownFrom, promptWidth, pageSize) : { rows: [] as string[], end: sqlView.length }
     const sqlSeen = isWritePrompt && !tooLong && !tooSmall && shown.end >= sqlView.length
     const dbList = target ? (target.databases.length ? target.databases : sc?.dbs ?? []) : []

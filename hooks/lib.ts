@@ -104,6 +104,38 @@ export function skeleton(sql: string): string | undefined {
   return out
 }
 
+// The statement as MySQL tokenizes it, minus comments: strings become '_str_', quoted names stay
+// (with their backticks), and every comment becomes one space. `undefined` when something never ends.
+export function decomment(sql: string): string | undefined {
+  let out = ''
+  for (let i = 0; i < sql.length; i++) {
+    const c = sql[i]!
+    if (c === "'" || c === '"' || c === '`') {
+      let j = i + 1
+      for (; j < sql.length; j++) {
+        if (sql[j] === '\\' && c !== '`') j++
+        else if (sql[j] === c) {
+          if (sql[j + 1] === c) j++
+          else break
+        }
+      }
+      if (j >= sql.length) return undefined
+      out += c === '`' ? sql.slice(i, j + 1) : " '_str_' "
+      i = j
+    } else if (c === '/' && sql[i + 1] === '*') {
+      const end = sql.indexOf('*/', i + 2)
+      if (end < 0) return undefined
+      out += ' '
+      i = end + 1
+    } else if (c === '#' || isDashComment(sql, i)) {
+      const end = sql.indexOf('\n', i)
+      out += ' '
+      i = end < 0 ? sql.length : end
+    } else out += c
+  }
+  return out
+}
+
 const FIRST = new Set(['SELECT', 'WITH', 'SHOW', 'DESCRIBE', 'DESC', 'EXPLAIN', 'TABLE', 'VALUES'])
 
 // Words that change data, schema, privileges, sessions or transactions, or run code.
@@ -151,6 +183,7 @@ export function readGuard(sql: string): string | undefined {
   const st = structure(sql)
   if ('refused' in st) return `Read-only console: ${st.refused.charAt(0).toLowerCase()}${st.refused.slice(1)}`
   const { words, body } = st
+  if (/\/\*\+[\s\S]*?\b(SET_VAR|MAX_EXECUTION_TIME)\b/i.test(sql)) return refuse('optimizer hints that change session settings or the time limit are not allowed')
   const lead = body.trimStart()
   const first = lead.startsWith('(') ? 'SELECT' : words[0]
   if (!first || !FIRST.has(first)) {
@@ -185,17 +218,65 @@ const SYSTEM_REF = new RegExp(`(^|[^A-Za-z0-9_$])\`?(${SYSTEM_SCHEMAS.join('|')}
 const BUILTINS = new Set(('ABS ACOS ADDDATE ADDTIME AES_DECRYPT AES_ENCRYPT ANY_VALUE ASCII ASIN ATAN ATAN2 AVG BIN BIT_AND BIT_COUNT BIT_LENGTH BIT_OR BIT_XOR CAST CEIL CEILING CHAR CHAR_LENGTH CHARACTER_LENGTH COALESCE CONCAT CONCAT_WS CONV CONVERT CONVERT_TZ COS COT COUNT CRC32 CURDATE CURRENT_DATE CURRENT_TIME CURRENT_TIMESTAMP CURTIME DATE DATE_ADD DATE_FORMAT DATE_SUB DATEDIFF DAY DAYNAME DAYOFMONTH DAYOFWEEK DAYOFYEAR DEGREES ELT EXP EXTRACT FIELD FIND_IN_SET FLOOR FORMAT FROM_BASE64 FROM_DAYS FROM_UNIXTIME GREATEST GROUP_CONCAT HEX HOUR IF IFNULL IN INET_ATON INET_NTOA INSERT INSTR INTERVAL ISNULL JSON_ARRAY JSON_ARRAY_APPEND JSON_ARRAY_INSERT JSON_CONTAINS JSON_CONTAINS_PATH JSON_EXTRACT JSON_INSERT JSON_KEYS JSON_LENGTH JSON_MERGE_PATCH JSON_MERGE_PRESERVE JSON_OBJECT JSON_QUOTE JSON_REMOVE JSON_REPLACE JSON_SEARCH JSON_SET JSON_TYPE JSON_UNQUOTE JSON_VALID LAST_DAY LAST_INSERT_ID LCASE LEAST LEFT LENGTH LN LOCALTIME LOCALTIMESTAMP LOCATE LOG LOG10 LOG2 LOWER LPAD LTRIM MAKEDATE MAKETIME MAX MD5 MICROSECOND MID MIN MINUTE MOD MONTH MONTHNAME NOW NULLIF OCT ORD PERIOD_ADD PERIOD_DIFF PI POSITION POW POWER QUARTER QUOTE RADIANS RAND REGEXP_INSTR REGEXP_LIKE REGEXP_REPLACE REGEXP_SUBSTR REPEAT REPLACE REVERSE RIGHT ROUND RPAD RTRIM SEC_TO_TIME SECOND SHA1 SHA2 SIGN SIN SPACE SQRT STD STDDEV STR_TO_DATE STRCMP SUBDATE SUBSTR SUBSTRING SUBSTRING_INDEX SUBTIME SUM SYSDATE TAN TIME TIME_FORMAT TIME_TO_SEC TIMEDIFF TIMESTAMP TIMESTAMPADD TIMESTAMPDIFF TO_BASE64 TO_DAYS TO_SECONDS TRIM TRUNCATE UCASE UNHEX UNIX_TIMESTAMP UPPER USER UTC_DATE UTC_TIME UTC_TIMESTAMP UUID UUID_SHORT UUID_TO_BIN BIN_TO_UUID VALUES VAR_POP VAR_SAMP VARIANCE WEEK WEEKDAY WEEKOFYEAR YEAR YEARWEEK ' +
   'EXISTS NOT AND OR SELECT FROM WHERE AS ON USING JOIN LIMIT ORDER BY GROUP HAVING DISTINCT ALL ANY SOME CASE WHEN THEN ELSE END INTO SET UPDATE DELETE KEY DUPLICATE NULL TRUE FALSE BETWEEN LIKE IS REGEXP RLIKE DIV').split(' '))
 
-// The skeleton with everything inside parentheses removed: what the statement says at its own level.
-function topLevel(sk: string): string {
+// Where the statement's own WHERE starts (outside any parentheses), or -1.
+function topLevelWhere(sk: string): number {
   let depth = 0
-  let out = ''
-  for (const c of sk) {
+  for (let i = 0; i < sk.length; i++) {
+    const c = sk[i]!
     if (c === '(') depth++
     else if (c === ')') depth = Math.max(0, depth - 1)
-    else if (depth === 0) out += c
+    else if (depth === 0 && /^WHERE\b/i.test(sk.slice(i, i + 6)) && !/[A-Za-z0-9_$]/.test(sk[i - 1] ?? ' ')) return i
   }
-  return out
+  return -1
 }
+
+// The condition without a trailing ORDER BY / LIMIT at its own level.
+function cutTail(cond: string): string {
+  let depth = 0
+  for (let i = 0; i < cond.length; i++) {
+    const c = cond[i]!
+    if (c === '(') depth++
+    else if (c === ')') depth = Math.max(0, depth - 1)
+    else if (depth === 0 && /^(ORDER|LIMIT)\b/i.test(cond.slice(i, i + 6)) && !/[A-Za-z0-9_$]/.test(cond[i - 1] ?? ' ')) return cond.slice(0, i)
+  }
+  return cond
+}
+
+// Strips parentheses that wrap the whole condition: `((1))` reads as `1`.
+function unwrap(cond: string): string {
+  let c = cond.trim()
+  for (;;) {
+    if (!c.startsWith('(') || !c.endsWith(')')) return c
+    let depth = 0
+    let wraps = true
+    for (let i = 0; i < c.length; i++) {
+      if (c[i] === '(') depth++
+      else if (c[i] === ')') depth--
+      if (depth === 0 && i < c.length - 1) {
+        wraps = false
+        break
+      }
+    }
+    if (!wraps) return c
+    c = c.slice(1, -1).trim()
+  }
+}
+
+// WHERE conditions that keep every row: TRUE, a non-zero number, NOT 0 / FALSE, n = n, 1 > 0 …
+function alwaysTrue(cond: string): boolean {
+  const c = cond.trim()
+  if (!c) return false
+  if (/^(TRUE|[1-9]\d*(\.\d+)?|NOT\s+(0|FALSE|NULL))$/i.test(c)) return true
+  const cmp = /^(\S+)\s*(=|>=|<=|<=>)\s*(\S+)$/.exec(c)
+  if (cmp && cmp[1] === cmp[3]) return true
+  const num = /^(-?\d+(?:\.\d+)?)\s*(>|<|>=|<=|<>|!=)\s*(-?\d+(?:\.\d+)?)$/.exec(c)
+  if (num) {
+    const a = Number(num[1]), b = Number(num[3])
+    return ({ '>': a > b, '<': a < b, '>=': a >= b, '<=': a <= b, '<>': a !== b, '!=': a !== b } as Record<string, boolean>)[num[2]!] ?? false
+  }
+  return false
+}
+
 
 export function classifyStatement(sql: string, database?: string): Classified {
   if (!readGuard(sql)) return { kind: 'read' }
@@ -209,15 +290,18 @@ export function classifyStatement(sql: string, database?: string): Classified {
   }
   // The server's own tables (accounts, privileges) are never written, whether named or selected.
   if (database && SYSTEM_SCHEMAS.includes(database.toLowerCase())) return { kind: 'refused', reason: `Not sent: ${database} is a system schema; the console never writes to it.` }
-  if (SYSTEM_REF.test(sql)) return { kind: 'refused', reason: `Not sent: it names a system schema (${SYSTEM_SCHEMAS.join(', ')}); the console never writes to them.` }
+  const plain = decomment(sql) ?? sql
+  if (SYSTEM_REF.test(plain)) return { kind: 'refused', reason: `Not sent: it names a system schema (${SYSTEM_SCHEMAS.join(', ')}); the console never writes to them.` }
   // Optimizer hints like /*+ SET_VAR(foreign_key_checks=OFF) */ change how the write runs.
   if (/\/\*\+/.test(sql)) return { kind: 'refused', reason: 'Not sent: optimizer hints (/*+ … */) can change session settings for the write; remove them.' }
   // The warning counts only a WHERE at the statement's own level, and one that filters nothing.
-  const top = topLevel(body)
-  const m = /\bWHERE\b([\s\S]*)$/i.exec(top)
-  const filtersNothing = !!m && /^\s*(?:1|TRUE|1\s*=\s*1|'?1'?\s*=\s*'?1'?|_str_\s*=\s*_str_)\s*(?:\b(?:ORDER|LIMIT)\b[\s\S]*)?$/i.test(m[1]!)
-  const noWhere = verb !== 'INSERT' && (!m || filtersNothing)
-  const calls = [...new Set([...body.matchAll(/([A-Za-z_][A-Za-z0-9_$]*(?:\s*\.\s*[A-Za-z_][A-Za-z0-9_$]*)?)\s*\(/g)].map(x => x[1]!.replace(/\s+/g, '')).filter(n => n.includes('.') || !BUILTINS.has(n.toUpperCase())))]
+  const at = topLevelWhere(body)
+  const cond = at < 0 ? '' : unwrap(cutTail(body.slice(at + 5)))
+  const filtersNothing = at >= 0 && alwaysTrue(cond)
+  const noWhere = verb !== 'INSERT' && (at < 0 || filtersNothing)
+  const NAME = '(?:`[^`]+`|[A-Za-z_][A-Za-z0-9_$]*)'
+  const callRe = new RegExp(`(\\bINTO\\s+)?(${NAME}(?:\\s*\\.\\s*${NAME})?)\\s*\\(`, 'gi')
+  const calls = [...new Set([...plain.matchAll(callRe)].filter(x => !x[1]).map(x => x[2]!.replace(/\s+/g, '').replace(/`/g, '')).filter(n => n.includes('.') || !BUILTINS.has(n.toUpperCase())))]
   return { kind: 'write', verb: verb as 'INSERT' | 'UPDATE' | 'DELETE', noWhere, calls }
 }
 
