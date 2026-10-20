@@ -142,9 +142,10 @@ async function resolvePath($: EngineInterface, p: string, under: string): Promis
 }
 
 async function write($: EngineInterface, file: string, text: string) {
+  // Recorded before the write: a sync landing between the write and the stat knows it's ours.
+  seenText[file] = text
   await $.fs.write(file, text)
   seen[file] = (await $.fs.stat(file)).mtimeMs
-  seenText[file] = text
 }
 
 async function readJson($: EngineInterface, file: string): Promise<any> {
@@ -282,11 +283,13 @@ async function sync($: EngineInterface) {
     }
     await pickDatabase($)
   }
-  if (await changed($, sessionFile)) {
+  // Changed by mtime or, within one mtime tick, by content; the pane's own last write is not a change.
+  const moved = await changed($, sessionFile)
+  const raw = moved || seenText[sessionFile] !== undefined ? await $.fs.read(sessionFile).catch(() => undefined) : undefined
+  if (raw !== undefined && raw !== seenText[sessionFile]) {
+    seenText[sessionFile] = raw
     // A prompt answers for the statement it shows; any outside change to the console cancels it.
     if (await read($, confirm)) await update($, confirm, () => null)
-    const raw = await $.fs.read(sessionFile).catch(() => undefined)
-    if (raw !== undefined) seenText[sessionFile] = raw
     let st: any
     try {
       st = raw === undefined ? undefined : JSON.parse(raw)
@@ -326,7 +329,7 @@ async function sync($: EngineInterface) {
         database: String(data.database ?? ''),
         sql: String(data.sql ?? ''),
         columns: data.columns.map(String),
-        rows: Array.isArray(data.rows) ? data.rows.map((r: unknown[]) => r.map(String)) : [],
+        rows: Array.isArray(data.rows) ? data.rows.map((r: unknown) => (Array.isArray(r) ? r.map(String) : [String(r)])) : [],
         ms: Number(data.ms ?? 0),
         ...(data.error ? { error: String(data.error) } : {}),
         ...(data.limited ? { limited: true } : {}),
@@ -361,6 +364,12 @@ async function attach($: EngineInterface, file?: string, config?: string): Promi
     )
   }
   if (nextFile !== sessionFile || nextConfig !== configFile) {
+    // A save still pending for the old console lands there now, never in the new one.
+    if (saveTimer) {
+      saveTimer.cancel()
+      saveTimer = undefined
+      await saveSession($).catch(() => undefined)
+    }
     sessionFile = nextFile
     configFile = nextConfig
     for (const k of Object.keys(seen)) delete seen[k]
@@ -373,9 +382,16 @@ async function attach($: EngineInterface, file?: string, config?: string): Promi
   return undefined
 }
 
-async function saveSession($: EngineInterface, extra: Record<string, unknown> = {}) {
-  if (!sessionFile) return
-  const file = sessionFile
+// One save at a time: two overlapping saves would each take the other's write for an outside one.
+let saving: Promise<void> = Promise.resolve()
+function saveSession($: EngineInterface, extra: Record<string, unknown> = {}, file = sessionFile): Promise<void> {
+  const run = saving.then(() => saveSessionNow($, extra, file))
+  saving = run.catch(() => undefined)
+  return run
+}
+
+async function saveSessionNow($: EngineInterface, extra: Record<string, unknown>, file: string) {
+  if (!file) return
   // Someone else (the agent, another editor) wrote the file since this pane last read or wrote it:
   // their editor fields win, only `extra` (a run's lastRun, a menu pick) is merged in, and the pane
   // reloads them. The mtime is read before the text, so a write in between counts as theirs.
@@ -385,17 +401,21 @@ async function saveSession($: EngineInterface, extra: Record<string, unknown> = 
   try {
     old = raw === undefined ? {} : (JSON.parse(raw) ?? {})
   } catch {
-    old = {}
+    // A hand edit with a JSON typo is never replaced by the pane's state.
+    $.ui.toast(`Not saved: ${file} is not valid JSON. Fix it, or delete it to start over.`)
+    return
   }
   const external =
+    file !== sessionFile ||
     (mtime !== undefined && seen[file] !== undefined && mtime !== seen[file]) ||
     (raw !== undefined && seenText[file] !== undefined && raw !== seenText[file])
   const mine = external
     ? {}
     : { server: await read($, server), database: await read($, database), cursorRow: await read($, cursorRow), query: await read($, query) }
   await write($, file, JSON.stringify({ ...old, ...mine, ...extra }, null, 2) + '\n')
-  if (external) {
+  if (external && file === sessionFile) {
     delete seen[file]
+    delete seenText[file]
     await sync($)
   }
 }
@@ -498,24 +518,27 @@ async function sendStatement($: EngineInterface, target: DbServer, db: string, s
 
 // Runs one statement on a trusted server and records the result. The guard runs again in runSql.
 async function runStatement($: EngineInterface, target: DbServer, db: string, sql: string, mode: 'read' | 'write' = 'read') {
-  const name = target.id
   const stmt = { sql }
+  // The console this statement belongs to: a switch to another session file meanwhile doesn't move it.
+  const at = { file: sessionFile, result: resultFile() }
   await update($, running, () => true)
   const out = await withPassword($, target)
     .then(creds => runSql($, creds, db, stmt.sql, mode))
     .catch(err => ({ columns: [] as string[], rows: [] as string[][], ms: 0, error: String(err) }))
-  await record($, target, db, stmt.sql, out)
+  await record($, target, db, stmt.sql, out, at)
 }
 
-async function record($: EngineInterface, target: DbServer, db: string, sql: string, out: { columns: string[]; rows: string[][]; ms: number; error?: string; limited?: boolean }) {
+async function record($: EngineInterface, target: DbServer, db: string, sql: string, out: { columns: string[]; rows: string[][]; ms: number; error?: string; limited?: boolean }, at = { file: sessionFile, result: resultFile() }) {
   const name = target.id
   const next: SqlResult = { id: Date.now(), server: target.name, database: db, sql, ...out, at: new Date().toISOString() }
-  await update($, result, () => next)
-  await update($, view, v => ({ ...EMPTY_VIEW, search: v?.search ?? '' }))
   await update($, running, () => false)
+  if (at.file === sessionFile) {
+    await update($, result, () => next)
+    await update($, view, v => ({ ...EMPTY_VIEW, search: v?.search ?? '' }))
+  }
   const { id: _i, ...file } = next
-  await write($, resultFile(), JSON.stringify({ ...file, rowCount: next.rows.length }, null, 2) + '\n')
-  await saveSession($, { lastRun: { server: name, database: db, ms: next.ms, rows: next.rows.length, ...(next.error ? { error: next.error.slice(0, 500) } : {}), at: next.at } })
+  await write($, at.result, JSON.stringify({ ...file, rowCount: next.rows.length }, null, 2) + '\n')
+  await saveSession($, { lastRun: { server: name, database: db, ms: next.ms, rows: next.rows.length, ...(next.error ? { error: next.error.slice(0, 500) } : {}), at: next.at } }, at.file)
   if (next.error) $.ui.toast(next.error.startsWith('Read-only') || next.error.startsWith('Not sent') ? 'Not sent: see the result pane' : `SQL: ${next.error.slice(0, 160)}`)
 }
 
@@ -682,7 +705,8 @@ export const register: Register = on => {
       },
     })
     const kept = await read($, paths)
-    await attach($, kept?.file, kept?.config)
+    // A broken file must not stop the watcher for the whole session.
+    await attach($, kept?.file, kept?.config).catch(() => undefined)
     $.clock.every(600, () => void sync($).catch(() => undefined))
     return next(e)
   })
@@ -759,9 +783,10 @@ export const register: Register = on => {
       if (data.type !== 'run' && data.type !== 'copy' && (await read($, confirm))) await update($, confirm, () => null)
       if (typeof data.text === 'string') await update($, query, () => data.text)
       if (typeof data.row === 'number') await update($, cursorRow, () => data.row)
+      // A cut carries its text on the edit post; a copy has its own.
+      if (typeof data.copy === 'string') $.ui.toast((await copyText($, data.copy)) ? (data.auto ? `Copied ${data.copy.length} characters` : 'Copied') : 'Copy failed')
       if (data.type === 'copy') {
-        const n = String(data.copy ?? '')
-        $.ui.toast((await copyText($, n)) ? (data.auto ? `Copied ${n.length} characters` : 'Copied') : 'Copy failed')
+        // nothing more: the text and cursor were taken above
       } else if (data.type === 'paste') {
         for (const argv of PASTE_COMMANDS) {
           const out = await $.process.run(argv).catch(() => undefined)
@@ -851,7 +876,7 @@ export const register: Register = on => {
     const editorHeight = Math.max(3, Math.floor((rows - fixed) * 0.4) - menuRows)
     viewerHeight = Math.max(4, rows - fixed - editorHeight)
     viewerWidth = Math.max(20, cols - 4)
-    editorBottom = 2 + editorHeight
+    editorBottom = 2 + menuRows + editorHeight
 
     let viewerProps: { lines: [string, string][][]; cursor: number; height: number; status: string }
     if (!r) {
@@ -939,6 +964,8 @@ export const register: Register = on => {
                   void (async () => {
                     const a = ask
                     if (a.kind !== 'trust') return
+                    const now = await read($, confirm)
+                    if (!now || JSON.stringify(now) !== JSON.stringify(a)) return $.ui.toast('That prompt was cancelled; nothing ran.')
                     await update($, confirm, () => null)
                     const target = (await readServers($)).find(s => s.id === a.serverId)
                     if (!target || credentialFingerprint(target) !== a.fingerprint) return $.ui.toast(`Not run: server "${a.serverName}" changed. Run it again.`)
@@ -1018,6 +1045,7 @@ export const register: Register = on => {
                       await update($, confirm, () => null)
                       const t = (await readServers($)).find(x => x.id === a.serverId)
                       if (!t || credentialFingerprint(t) !== a.fingerprint) return $.ui.toast(`Not run: server "${a.serverName}" changed in ${configFile}. Run it again.`)
+                      if (await isProduction($, t)) return $.ui.toast(`Not run: ${a.serverName} is now tagged production, which gets no session unlock. Run it again to approve it once.`)
                       await update($, unlocked, l => [...(l ?? []).filter(u => u.id !== a.serverId), { id: a.serverId, fingerprint: a.fingerprint } as SqlUnlock])
                       $.ui.toast(`${a.serverName}: writes unlocked until this session ends (🔓 locks again)`)
                       await sendStatement($, t, a.database, a.sql, 'write', a.fingerprint)

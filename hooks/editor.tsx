@@ -224,7 +224,8 @@ const Editor: ClientModule<Props, State> = (props, surface) => {
   const gutter = String(st.lines.length).length + 3
   const runRows = new Set(props.runRows ?? [])
 
-  const commit = (next: State, type = 'edit', group = '') => {
+  // `copy` rides on the same post: a second post in one frame would replace the first.
+  const commit = (next: State, type = 'edit', group = '', copy?: string) => {
     if (type === 'edit' && next.sugSel === st.sugSel) next.sugSel = 0
     if (type === 'edit' && next.lines !== st.lines) {
       // Typing on one line is one undo step; any other edit is its own step.
@@ -236,7 +237,7 @@ const Editor: ClientModule<Props, State> = (props, surface) => {
     if (next.row < next.top) next.top = next.row
     if (next.row >= next.top + height) next.top = next.row - height + 1
     surface.setState(next)
-    surface.post({ type, text: next.lines.join('\n'), row: next.row })
+    surface.post({ type, text: next.lines.join('\n'), row: next.row, ...(copy !== undefined ? { copy } : {}) })
   }
 
   // A wheel tick the hooks module heard over the editor moves the window, not the cursor.
@@ -317,15 +318,15 @@ const Editor: ClientModule<Props, State> = (props, surface) => {
     }
     if ((k.ctrl || k.meta) && (key === 'c' || key === 'x')) {
       const sel = selectedText(s) || line
-      surface.post({ type: 'copy', copy: sel, text: text(), row: s.row })
       if (key === 'x') {
-        if (range(s)) return commit(deleteSelection(s))
+        if (range(s)) return commit(deleteSelection(s), 'edit', '', sel)
         const lines = [...s.lines]
         lines.splice(s.row, 1)
         if (!lines.length) lines.push('')
         const row = Math.min(s.row, lines.length - 1)
-        return commit({ ...s, lines, row, col: 0, anchor: undefined })
+        return commit({ ...s, lines, row, col: 0, anchor: undefined }, 'edit', '', sel)
       }
+      surface.post({ type: 'copy', copy: sel, text: text(), row: s.row })
       return
     }
     if ((k.ctrl || k.meta) && key === 'v') return surface.post({ type: 'paste', text: text(), row: s.row })
