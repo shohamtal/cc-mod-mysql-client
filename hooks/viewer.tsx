@@ -27,7 +27,7 @@ const Viewer: ClientModule<Props, number> = (props, surface) => {
   let press: { x: number; y: number; moved: boolean } | undefined
   surface.onPointer(ev => {
     if (ev.type === 'down' && ev.button === 'left') press = { x: ev.x, y: ev.y, moved: false }
-    else if (ev.type === 'move' && press && ev.button === 'left' && ev.x !== press.x) {
+    else if (ev.type === 'move' && press && ev.button === 'left' && ev.x !== press.x && (press.moved || Math.abs(ev.x - press.x) >= 2)) {
       surface.post({ type: 'pan', by: press.x - ev.x })
       press = { ...press, x: ev.x, moved: true }
     } else if (ev.type === 'up' && press) {

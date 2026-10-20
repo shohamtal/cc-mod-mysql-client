@@ -3,7 +3,7 @@
 ## 0.2.2
 
 - **Copy works in every terminal:** copies go to `pbcopy` / `wl-copy` / `xclip` / `clip.exe` first, and the terminal's OSC 52 only as a fallback. OSC 52 is off by default in iTerm2 and missing in Terminal.app, where copying looked like it worked but left the clipboard empty.
-- **A mouse selection copies itself:** Cmd+C belongs to the terminal and never reaches the pane, so selecting with the mouse copies. `ctrl+c` still copies the selection, or the line.
+- **A mouse selection copies itself:** Cmd+C belongs to the terminal and never reaches the pane, so selecting with the mouse copies, unless the selection looks like it holds a secret (`IDENTIFIED BY`, `PASSWORD`). `ctrl+c` still copies the selection, or the line.
 - **Drag the result sideways** to scroll its columns. Claude Code doesn't pass a sideways trackpad swipe to mods; ← → still work.
 
 ## 0.2.1
