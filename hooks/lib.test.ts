@@ -131,14 +131,22 @@ describe('writes the person can unlock', () => {
     expect(classifyStatement("UPDATE t SET note = 'where' ")).toMatchObject({ kind: 'write', verb: 'UPDATE', noWhere: true })
   })
 
-  test('everything else that changes something stays refused, unlocked or not', async () => {
+  test('schema, privilege and procedure statements are writes too; DDL is marked as not undoable', async () => {
+    for (const sql of ['DROP TABLE t', 'TRUNCATE t', 'ALTER TABLE t ADD c INT', 'CREATE TABLE x (a INT)', 'RENAME TABLE a TO b',
+      "GRANT SELECT, SHUTDOWN ON app.* TO 'r'@'%'", "REVOKE ALL ON app.* FROM 'r'@'%'", 'CREATE INDEX i ON t (a)', 'DROP DATABASE scratch',
+      'ALTER TABLE t ADD COLUMN c INT, LOCK=NONE']) expect(classifyStatement(sql)).toMatchObject({ kind: 'write', ddl: true })
+    expect(classifyStatement('REPLACE INTO t VALUES (1)')).toMatchObject({ kind: 'write', ddl: false })
+    expect(classifyStatement('CALL app.cleanup(7)')).toMatchObject({ kind: 'write', verb: 'CALL', ddl: false })
+  })
+
+  test('what touches files, controls the session or server, or hides more statements stays refused, approved or not', async () => {
     for (const sql of [
-      'DROP TABLE t', 'TRUNCATE t', 'ALTER TABLE t ADD c INT', 'CREATE TABLE x (a INT)', 'RENAME TABLE a TO b', 'GRANT ALL ON *.* TO x',
-      'REPLACE INTO t VALUES (1)', 'LOAD DATA INFILE "x" INTO TABLE t', 'LOAD DATA LOCAL INFILE "/etc/passwd" INTO TABLE t',
-      'INSERT INTO t SELECT * FROM u INTO OUTFILE "/tmp/x"', 'DELETE FROM t WHERE id = GET_LOCK("x", 1)', 'CALL p()',
-      'UPDATE t SET a = 1; DROP TABLE t', 'DELETE FROM t WHERE id = 1--1;DROP TABLE u', 'INSERT INTO t VALUES (1) /*! ; DROP TABLE t */',
-      'UPDATE t SET a = 1\nsystem rm -rf ~', 'SET autocommit = 0', 'START TRANSACTION', 'COMMIT', 'LOCK TABLES t WRITE',
-      'UPDATE t SET a = LOAD_FILE("/etc/passwd") WHERE id = 1', 'WITH x AS (SELECT 1) DELETE FROM t',
+      'LOAD DATA INFILE "x" INTO TABLE t', 'LOAD DATA LOCAL INFILE "/etc/passwd" INTO TABLE t', 'INSERT INTO t SELECT * FROM u INTO OUTFILE "/tmp/x"',
+      'CREATE TABLE t2 AS SELECT * FROM t INTO DUMPFILE "/tmp/x"', 'DELETE FROM t WHERE id = GET_LOCK("x", 1)',
+      'UPDATE t SET a = LOAD_FILE("/etc/passwd") WHERE id = 1', 'UPDATE t SET a = 1; DROP TABLE t', 'DELETE FROM t WHERE id = 1--1;DROP TABLE u',
+      'INSERT INTO t VALUES (1) /*! ; DROP TABLE t */', 'UPDATE t SET a = 1\nsystem rm -rf ~', 'SET autocommit = 0', 'START TRANSACTION', 'COMMIT',
+      'LOCK TABLES t WRITE', 'KILL 12', 'SHUTDOWN', 'INSTALL PLUGIN x SONAME "y.so"', 'CREATE PROCEDURE p() BEGIN DELETE FROM t; END',
+      'DROP DATABASE mysql', 'CREATE SCHEMA IF NOT EXISTS `sys`', 'WITH x AS (SELECT 1) DELETE FROM t', 'HANDLER t OPEN', 'PREPARE s FROM "x"',
     ]) expect(classifyStatement(sql).kind).toBe('refused')
   })
 

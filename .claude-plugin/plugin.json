@@ -1,7 +1,7 @@
 {
   "name": "sql-console",
   "version": "0.2.0",
-  "description": "MySQL console in a Claude Code side pane: Claude writes queries, you run them. Read-only by default; INSERT / UPDATE / DELETE unlock per statement or session. Schema-aware autocomplete.",
+  "description": "MySQL console in a Claude Code side pane: Claude writes queries, you run them. Read-only by default; writes (data, schema, privileges) run only after you approve them. Schema-aware autocomplete.",
   "types": "./types/index.d.ts",
   "author": {
     "name": "shohamtal"

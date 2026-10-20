@@ -128,9 +128,18 @@ describe('writes', () => {
     expect(w.mysql()[0]!.stdin).toContain('START TRANSACTION READ ONLY;')
   })
 
-  test('DDL never prompts and never runs, unlocked or not', async ($, on) => {
+  test('DDL opens the same prompt, warns it cannot be rolled back, and runs only on Run', async ($, on) => {
     const { w, ui } = await open($, [{ id: 'dev', name: 'Dev', host: 'db.dev', databases: ['app'] }], on)
     await ui.post({ type: 'run', text: 'DROP TABLE users', row: 0 }, { in: 'editor' })
+    expect(JSON.stringify(await ui.drawn())).toContain("can't be rolled back")
+    expect(w.mysql()).toEqual([])
+    await ui.press({ key: 'write-once' })
+    expect(w.writes()[0]!.stdin).toContain('\nDROP TABLE users;\n')
+  })
+
+  test('file and server control never prompt and never run', async ($, on) => {
+    const { w, ui } = await open($, [{ id: 'dev', name: 'Dev', host: 'db.dev', databases: ['app'] }], on)
+    await ui.post({ type: 'run', text: 'LOAD DATA LOCAL INFILE "/etc/passwd" INTO TABLE t', row: 0 }, { in: 'editor' })
     expect(await ui.find({ key: 'write-once' })).toBeUndefined()
     expect(w.mysql()).toEqual([])
   })

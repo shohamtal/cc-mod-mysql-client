@@ -78,7 +78,7 @@ const HELP = `**Top bar**
 - Enter / Space / click — open a row as column: value lines · \`e\` open all · \`c\` close all
 - \`y\` copy as TSV · \`J\` copy as JSON · \`/\` or \`ctrl+f\` find · \`n\`/\`N\` next/previous
 
-**Writes are locked** — reads (SELECT, WITH, SHOW, DESCRIBE, EXPLAIN, TABLE, VALUES) run one statement at a time inside a read-only session and transaction. An INSERT, UPDATE or DELETE opens a prompt that shows the exact statement: **Run this statement once**, **Unlock for this session** (not on production servers) or **Cancel**; 🔒 / 🔓 shows and resets the lock. Everything else that changes something (DDL, privileges, LOAD, OUTFILE, CALL, locks, transactions, SET) is always refused.
+**Writes are locked** — reads (SELECT, WITH, SHOW, DESCRIBE, EXPLAIN, TABLE, VALUES) run one statement at a time inside a read-only session and transaction. A write (INSERT, UPDATE, DELETE, REPLACE, CREATE, ALTER, DROP, TRUNCATE, RENAME, GRANT, REVOKE, CALL) opens a prompt that shows the exact statement: **Run this statement once**, **Unlock for this session** (not on production servers) or **Cancel**; 🔒 / 🔓 shows and resets the lock. DDL can't be rolled back, and the prompt says so. Always refused: files (LOAD, OUTFILE, LOAD_FILE), session or server control (SET, transactions, locks, KILL, SHUTDOWN, plugins), system schemas, and more than one statement.
 
 **Files** — one JSON session file per console (default \`~/.claude/mods/sql/sessions/default.json\`: server, database, cursorRow, query, lastRun) + \`<name>.result.json\`; servers in \`~/.claude/mods/sql/servers.json\`. Edits show here live.
 
@@ -93,7 +93,7 @@ Session file (default ~/.claude/mods/sql/sessions/default.json): {"server": "<na
 - To give the user a query, write the session file (keep the other keys); the pane updates within a second. Set "server" (a server id) and "database" for where it should run (staging vs production is the user's call unless they told you), and cursorRow to the statement's first line. Read the file to see the user's edits.
 Result file: the session file with .result.json in place of .json: {server, database, sql, columns, rows (array of arrays of strings, "NULL" for null), rowCount, limited, ms, error?, at}. Read it after the user runs.
 Config file (default ~/.claude/mods/sql/servers.json): {"servers": [{"id","name","host","port","https","username","password" | "passwordEnv" | "passwordCommand","tag","databases":[...],"maxRows"?,"timeoutSec"?}]}. The session file's "server" is a server id. Never print passwords.
-Reads (SELECT / WITH / SHOW / DESCRIBE / EXPLAIN / TABLE / VALUES) run one at a time in a read-only session. An INSERT / UPDATE / DELETE you write into the console opens a prompt for the user, who may run it once or unlock that server for their session (never production); you cannot unlock or approve writes yourself, and never edit servers.json to do so. DDL, privileges, LOAD, OUTFILE, CALL, locks and multiple statements are always refused, so don't propose migrations through it. Always include a WHERE clause in UPDATE / DELETE unless the user asked for every row.
+Reads (SELECT / WITH / SHOW / DESCRIBE / EXPLAIN / TABLE / VALUES) run one at a time in a read-only session. A write you put in the console (INSERT / UPDATE / DELETE / REPLACE, CREATE / ALTER / DROP / TRUNCATE / RENAME, GRANT / REVOKE, CALL) opens a prompt for the user, who may run it once or unlock that server for their session (never production); you cannot unlock or approve writes yourself, and never edit servers.json to do so. One statement at a time; files (LOAD, OUTFILE), session/server control (SET, transactions, locks, KILL), system schemas and procedure/trigger bodies with BEGIN … END are always refused. Always include a WHERE clause in UPDATE / DELETE unless the user asked for every row, and say plainly when a statement (DDL) can't be undone.
 The user runs statements (▶ in the editor gutter or ctrl+r); do not run them yourself unless asked.`
 
 const DEFAULT_SERVERS = {
@@ -449,7 +449,7 @@ async function run($: EngineInterface) {
     await update($, menuOpen, () => '')
     const prompt: SqlWritePrompt = {
       kind: 'write', serverId: target.id, serverName: target.name, target: targetLabel(target), fingerprint: credentialFingerprint(target),
-      database: db, sql: stmt.sql, verb: c.verb, noWhere: c.noWhere, calls: c.calls, production: await isProduction($, target), shownFrom: 0,
+      database: db, sql: stmt.sql, verb: c.verb, noWhere: c.noWhere, calls: c.calls, ddl: c.ddl, production: await isProduction($, target), shownFrom: 0,
     }
     await update($, confirm, () => prompt)
     return
@@ -804,7 +804,7 @@ export const register: Register = on => {
     const sqlView = ask?.kind === 'write' ? asciiView(ask.sql) : ''
     // Toolbar and info line (2), the prompt's frame (2), title, target, statement header, hint and
     // buttons (5), plus the warning lines it shows.
-    const chrome = 9 + (ask?.kind === 'write' && ask.noWhere ? 1 : 0) + (ask?.kind === 'write' && ask.calls.length ? 1 : 0)
+    const chrome = 9 + (ask?.kind === 'write' && ask.noWhere ? 1 : 0) + (ask?.kind === 'write' && ask.calls.length ? 1 : 0) + (ask?.kind === 'write' && ask.ddl ? 1 : 0)
     const pageSize = rows - chrome
     const tooLong = sqlView.length > SQL_LIMIT
     // An unknown pane size can't be checked, so it counts as too small: no run buttons.
@@ -865,7 +865,7 @@ export const register: Register = on => {
                 if (isUnlocked) {
                   await update($, unlocked, l => (l ?? []).filter(u => u.id !== targetFull.id))
                   $.ui.toast(`${targetFull.name}: writes locked`)
-                } else $.ui.toast('Writes unlock from the prompt an INSERT, UPDATE or DELETE opens, one statement or one session at a time.')
+                } else $.ui.toast('Writes unlock from the prompt a write opens, one statement or one session at a time.')
               })().catch(() => undefined)
             }
           />
@@ -925,6 +925,7 @@ export const register: Register = on => {
             <Text bold color="error" wrap="truncate-end">{`Writes are locked for ${asciiView(ask.serverName)}`}</Text>
             <Text wrap="truncate-end">{asciiView(`${ask.verb} on ${ask.target} / ${ask.database || '(no database)'}${ask.production ? ' · production' : ''}`)}</Text>
             {ask.noWhere ? <Text bold color="error" wrap="truncate-end">{`No WHERE clause: this ${ask.verb === 'DELETE' ? 'deletes' : 'changes'} every row of the table.`}</Text> : null}
+            {ask.ddl ? <Text bold color="error" wrap="truncate-end">{`${ask.verb} commits at once: it can't be rolled back.`}</Text> : null}
             {ask.calls.length ? <Text color="warning" wrap="truncate-end">{asciiView(`Calls ${ask.calls.map(c => `${c}()`).join(', ')}: a stored function can change more than this statement shows.`)}</Text> : null}
             {tooLong ? (
               <Text color="error" wrap="truncate-end">{`statement: ${sqlView.length} characters, too long to review here, so it can't be run from the console.`}</Text>
@@ -938,7 +939,7 @@ export const register: Register = on => {
                 ))}
               </Box>
             )}
-            <Text dimColor wrap="truncate-end">{sqlSeen ? 'Run sends exactly this statement, in one transaction.' : tooLong ? 'Cancel, and split it into smaller statements.' : tooSmall ? 'Enlarge the pane, or cancel.' : 'Read the whole statement before you can run it.'}</Text>
+            <Text dimColor wrap="truncate-end">{sqlSeen ? (ask.ddl ? 'Run sends exactly this statement.' : 'Run sends exactly this statement, in one transaction.') : tooLong ? 'Cancel, and split it into smaller statements.' : tooSmall ? 'Enlarge the pane, or cancel.' : 'Read the whole statement before you can run it.'}</Text>
             <Box flexDirection="row" gap={2} height={1}>
               {!sqlSeen && !tooLong && !tooSmall ? (
                 <Button

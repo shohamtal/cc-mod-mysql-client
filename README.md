@@ -1,6 +1,6 @@
 # SQL Console: a Claude Code mod
 
-A MySQL console docked beside the Claude Code terminal. Claude writes queries into it, you check and run them, and Claude reads the result. It's **read-only by default**: an `INSERT`, `UPDATE` or `DELETE` runs only after you approve it in the pane.
+A MySQL console docked beside the Claude Code terminal. Claude writes queries into it, you check and run them, and Claude reads the result. It's **read-only by default**: a write (data, schema or privileges) runs only after you approve it in the pane.
 
 - **Editor:** SQL colors, a ▶ next to every statement, and autocomplete for keywords, databases, tables (after `FROM`/`JOIN`, `db.`) and columns (in `SELECT`/`WHERE`/`ON`/`BY`, `alias.`). Also selection, copy / cut / paste, undo / redo and keyword formatting.
 - **Result:** a table you scroll in both directions. Open a row to see it as `column: value` lines. Find highlights matches; copy as TSV or JSON.
@@ -22,9 +22,10 @@ Reads run freely, one statement at a time, inside a read-only session. **Writes 
 
 **Reads (`SELECT`, `WITH`, `SHOW`, `DESCRIBE`, `EXPLAIN`, `TABLE`, `VALUES`)** pass `readGuard` (`hooks/lib.ts`). Each one runs as `SET SESSION TRANSACTION READ ONLY; START TRANSACTION READ ONLY; …; ROLLBACK`, with `sql_select_limit` and `max_execution_time` set.
 
-**`INSERT`, `UPDATE` and `DELETE`** open a prompt that shows:
+**Writes:** `INSERT` / `UPDATE` / `DELETE` / `REPLACE`, `CREATE` / `ALTER` / `DROP` / `TRUNCATE` / `RENAME`, `GRANT` / `REVOKE` and `CALL`. Each one opens a prompt that shows:
 - the server and database
 - a red warning when an `UPDATE` or `DELETE` has no `WHERE` clause
+- a red warning that DDL and privilege changes commit at once and can't be rolled back
 - the **exact statement**, one character per column (anything outside plain ASCII is shown as `\uXXXX`), paged to fit the pane
 
 Its buttons, which appear only once you've seen the whole statement:
@@ -42,12 +43,11 @@ Unlocks live in memory only: no file the console reads can unlock writes, and ag
 - The prompt names any call to a function that isn't built in, since a stored function can change more than the statement shows.
 - The no-`WHERE` warning ignores a `WHERE` inside a subquery and treats `WHERE 1` / `TRUE` / `1=1` as no `WHERE` at all.
 
-**Always refused, unlocked or not:**
-- DDL (`CREATE`, `ALTER`, `DROP`, `TRUNCATE`, `RENAME`)
-- privileges
-- `REPLACE`, `LOAD DATA`, `INTO OUTFILE` / `DUMPFILE`, `LOAD_FILE`
-- `CALL`, `DO`, `HANDLER`, locks, `SET`, transaction commands
-- `/*! */` executable comments, more than one statement, and mysql client commands (`\!`, `system`, `source`, …)
+**Always refused, approved or not:**
+- **Files:** `LOAD DATA`, `INTO OUTFILE` / `DUMPFILE`, `LOAD_FILE`. These read or write files on your machine or the server's.
+- **Session and server control:** `SET`, transaction commands, `LOCK TABLES`, `KILL`, `SHUTDOWN`, `INSTALL PLUGIN`, `HANDLER`, `PREPARE`.
+- **System schemas:** direct writes to `mysql`, `sys`, `performance_schema` or `information_schema`. Use `GRANT` / `CREATE USER` instead.
+- **Anything that could run more than the statement shown:** more than one statement, procedure, function, trigger or event bodies with `BEGIN … END` (create those with a migration tool), `/*! */` executable comments, optimizer hints, and mysql client commands (`\!`, `system`, `source`, …).
 
 **The client:**
 - `mysql` runs with `--skip-system-command`, and with `--defaults-file` set to the mod's own option file, so `~/.my.cnf` and `/etc/my.cnf` are never read.

@@ -4,13 +4,13 @@
     "name": "shohamtal"
   },
   "metadata": {
-    "description": "A MySQL console for Claude Code, as a side-pane mod: read-only by default, writes unlock per statement."
+    "description": "A MySQL console for Claude Code, as a side-pane mod: read-only by default, writes run after you approve them."
   },
   "plugins": [
     {
       "name": "sql-console",
       "source": "./",
-      "description": "MySQL console in a Claude Code side pane: Claude writes queries, you run them. Read-only by default; INSERT / UPDATE / DELETE unlock per statement or session. Schema-aware autocomplete."
+      "description": "MySQL console in a Claude Code side pane: Claude writes queries, you run them. Read-only by default; writes (data, schema, privileges) run only after you approve them. Schema-aware autocomplete."
     }
   ]
 }

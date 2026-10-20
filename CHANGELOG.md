@@ -2,7 +2,7 @@
 
 ## 0.2.0
 
-- **Writes, locked by default:** an `INSERT`, `UPDATE` or `DELETE` opens a prompt with the exact statement. It shows ASCII only, is paged to the pane, and warns when an `UPDATE` or `DELETE` has no `WHERE`. **Run this statement once** runs it in one transaction and shows the affected rows. **Unlock for this session** isn't offered for production, and the unlock is tied to the server entry. 🔒 / 🔓 shows and resets the lock. DDL, privileges, `LOAD`, `OUTFILE`, `CALL`, locks and multiple statements stay refused.
+- **Writes, locked by default:** any data, schema, privilege or `CALL` statement opens a prompt with the exact statement. It shows ASCII only, is paged to the pane, warns on a missing `WHERE` and on non-undoable DDL, and names non-built-in function calls. **Run this statement once** or **Unlock for this session** (never on production, tied to the server entry). 🔒 / 🔓 shows the lock. Files, session or server control, system schemas, `BEGIN … END` bodies and multiple statements stay refused.
 - **Credentials:** a server with credentials asks once before first use.
 - **Client options:** `mysql` reads only the mod's own option file.
 - **Agent tool:** it stays inside the mod's folder.

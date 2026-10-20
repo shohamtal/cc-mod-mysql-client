@@ -14,11 +14,11 @@
   - `printenv` and your `passwordCommand` when configured
 - **Writes to the database:** locked by default, enforced in code whatever the database user may do.
   1. **Reads:** `readGuard` in `hooks/lib.ts` allows one `SELECT` / `WITH` / `SHOW` / `DESCRIBE` / `EXPLAIN` / `TABLE` / `VALUES` statement at a time, checked with strings and comments removed. It runs inside `SET SESSION TRANSACTION READ ONLY` and `START TRANSACTION READ ONLY … ROLLBACK`.
-  2. **Writes:** `classifyStatement` allows one plain `INSERT` / `UPDATE` / `DELETE`. It runs only after the person approves the exact statement in the pane (once, or for the session on a server not tagged production; unlocks are in memory only), in one transaction.
+  2. **Writes:** `classifyStatement` allows one data, schema, privilege or `CALL` statement. It runs only after the person approves the exact statement in the pane (once, or for the session on a server not tagged production; unlocks are in memory only). Data changes run in one transaction; DDL commits at once, and the prompt says so.
   3. **Always refused:**
-     - DDL, privileges, `REPLACE`, `LOAD`, `INTO OUTFILE`, `LOAD_FILE`
-     - `CALL`, locks, `SET`, transaction commands
-     - `/*! */`, multiple statements, mysql client commands
+     - files (`LOAD`, `INTO OUTFILE` / `DUMPFILE`, `LOAD_FILE`)
+     - session and server control (`SET`, transactions, locks, `KILL`, `SHUTDOWN`, plugins)
+     - system schemas, `BEGIN … END` bodies, `/*! */`, optimizer hints in writes, multiple statements, mysql client commands
   4. **Client:** `mysql` runs with `--skip-system-command` and `--defaults-file` (its own option file only, never `~/.my.cnf`). The session `sql_mode` drops `NO_BACKSLASH_ESCAPES` and `ANSI_QUOTES`.
 - **Credentials ask first:** a server with a user needs the person's OK once before its first query, keyed to its host and credential source; a `passwordCommand` never runs before that.
 
