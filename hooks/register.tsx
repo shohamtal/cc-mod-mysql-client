@@ -383,10 +383,13 @@ async function attach($: EngineInterface, file?: string, config?: string): Promi
 }
 
 // One save at a time: two overlapping saves would each take the other's write for an outside one.
+// Never call saveSession from anything a save runs (sync, pickDatabase, resolveServer): it would wait
+// on itself. A failed save tells the person, since nothing else would.
 let saving: Promise<void> = Promise.resolve()
+let badJson = ''
 function saveSession($: EngineInterface, extra: Record<string, unknown> = {}, file = sessionFile): Promise<void> {
   const run = saving.then(() => saveSessionNow($, extra, file))
-  saving = run.catch(() => undefined)
+  saving = run.catch(err => $.ui.toast(`Not saved: ${file}: ${String(err).slice(0, 160)}`))
   return run
 }
 
@@ -401,8 +404,9 @@ async function saveSessionNow($: EngineInterface, extra: Record<string, unknown>
   try {
     old = raw === undefined ? {} : (JSON.parse(raw) ?? {})
   } catch {
-    // A hand edit with a JSON typo is never replaced by the pane's state.
-    $.ui.toast(`Not saved: ${file} is not valid JSON. Fix it, or delete it to start over.`)
+    // A hand edit with a JSON typo is never replaced by the pane's state; said once per broken version.
+    if (badJson !== raw) $.ui.toast(`Not saved: ${file} is not valid JSON. Fix it, or delete it to start over.`)
+    badJson = raw ?? ''
     return
   }
   const external =
