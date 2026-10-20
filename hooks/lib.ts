@@ -316,16 +316,16 @@ export function classifyStatement(sql: string, database?: string): Classified {
     // may hide inside procedures' bodies or events.
     if ((w === 'START' && words[i + 1] === 'TRANSACTION') || (w === 'LOCK' && (words[i + 1] === 'TABLES' || words[i + 1] === 'TABLE') && verb !== 'GRANT' && verb !== 'REVOKE')) return { kind: 'refused', reason: `Not sent: ${w} ${words[i + 1]} controls the session.` }
   }
+  // An object owned by another account runs later with that account's rights.
+  if (/\bDEFINER\s*=/i.test(body)) return { kind: 'refused', reason: 'Not sent: DEFINER = … makes the object run as another account; leave it out.' }
   const objects = OBJECTS[verb]
   if (objects) {
     const object = words.slice(1).find(w => !OBJECT_MODIFIERS.has(w))
     if (!object || !objects.has(object)) {
       const routine = object && ['PROCEDURE', 'FUNCTION', 'TRIGGER', 'EVENT', 'AGGREGATE'].includes(object)
-      return { kind: 'refused', reason: routine ? `Not sent: a ${object.toLowerCase()} runs later without a prompt; create or change it with a migration tool.` : `Not sent: the console doesn't ${verb} ${object ?? 'that'} (only ${[...objects].join(', ')}).` }
+      return { kind: 'refused', reason: routine ? `Not sent: ${object === 'EVENT' ? 'an' : 'a'} ${object.toLowerCase()} runs later without a prompt; create or change it with a migration tool.` : `Not sent: the console doesn't ${verb} ${object ?? 'that'} (only ${[...objects].join(', ')}).` }
     }
   }
-  // An object owned by another account runs later with that account's rights.
-  if (/\bDEFINER\s*=/i.test(body)) return { kind: 'refused', reason: 'Not sent: DEFINER = … makes the object run as another account; leave it out.' }
   // Table options that put data on the server's disk or in another server.
   if ((verb === 'CREATE' || verb === 'ALTER') && words.some(w => w === 'DIRECTORY' || w === 'CONNECTION')) {
     return { kind: 'refused', reason: 'Not sent: DATA / INDEX DIRECTORY and CONNECTION place a table on the server\'s disk or another server.' }
