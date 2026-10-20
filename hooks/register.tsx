@@ -388,7 +388,7 @@ async function mysqlBinary($: EngineInterface, s: DbServer): Promise<string> {
 async function runSql($: EngineInterface, creds: DbServer, db: string, sql: string, mode: 'read' | 'write' = 'read'): Promise<{ columns: string[]; rows: string[][]; ms: number; error?: string; limited?: boolean }> {
   // The guard runs again here so no caller can skip it: reads must pass readGuard, writes must be
   // a plain INSERT / UPDATE / DELETE that the person approved (mode 'write' only comes from there).
-  const c = classifyStatement(sql)
+  const c = classifyStatement(sql, db)
   if (mode === 'read' && c.kind !== 'read') return { columns: [], rows: [], ms: 0, error: c.kind === 'refused' ? c.reason : readGuard(sql)! }
   if (mode === 'write' && c.kind !== 'write') return { columns: [], rows: [], ms: 0, error: c.kind === 'refused' ? c.reason : 'Not sent: not a write.' }
   if (!creds.host) return { columns: [], rows: [], ms: 0, error: `Server "${creds.name}" has no host. Fill it in ${configFile}.` }
@@ -442,14 +442,14 @@ async function run($: EngineInterface) {
   const db = await read($, database)
   const target = (await readServers($)).find(s => s.id === name)
   if (!target) return $.ui.toast(`No server "${name}" in ${configFile}`)
-  const c = classifyStatement(stmt.sql)
+  const c = classifyStatement(stmt.sql, db)
   if (c.kind === 'refused') return record($, target, db, stmt.sql, { columns: [], rows: [], ms: 0, error: c.reason })
   if (c.kind === 'write' && !(await isUnlockedNow($, target))) {
     // Writes are locked: the person approves this exact statement, or unlocks the server for the session.
     await update($, menuOpen, () => '')
     const prompt: SqlWritePrompt = {
       kind: 'write', serverId: target.id, serverName: target.name, target: targetLabel(target), fingerprint: credentialFingerprint(target),
-      database: db, sql: stmt.sql, verb: c.verb, noWhere: c.noWhere, production: await isProduction($, target), shownFrom: 0,
+      database: db, sql: stmt.sql, verb: c.verb, noWhere: c.noWhere, calls: c.calls, production: await isProduction($, target), shownFrom: 0,
     }
     await update($, confirm, () => prompt)
     return
@@ -771,7 +771,8 @@ export const register: Register = on => {
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Text, Button, Input, Client, Markdown } = $.ui.resolve(e) as any
     // The pane's own rows (the terminal's height is larger: transcript, prompt and footer share it).
-    const rows = (e.props as any).scroll?.bodyRows ?? e.viewport?.rows ?? 36
+    const knownRows: number | undefined = (e.props as any).scroll?.bodyRows
+    const rows = knownRows ?? e.viewport?.rows ?? 36
     const text = await read($, query)
     const r = await read($, result)
     const v = (await read($, view)) ?? EMPTY_VIEW
@@ -800,10 +801,13 @@ export const register: Register = on => {
     // buttons appear only once its end has been on screen.
     const promptWidth = Math.max(10, cols - 4)
     const sqlView = ask?.kind === 'write' ? asciiView(ask.sql) : ''
-    const chrome = 8 + (ask?.kind === 'write' && ask.noWhere ? 1 : 0)
+    // Toolbar and info line (2), the prompt's frame (2), title, target, statement header, hint and
+    // buttons (5), plus the warning lines it shows.
+    const chrome = 9 + (ask?.kind === 'write' && ask.noWhere ? 1 : 0) + (ask?.kind === 'write' && ask.calls.length ? 1 : 0)
     const pageSize = rows - chrome
     const tooLong = sqlView.length > SQL_LIMIT
-    const tooSmall = isWritePrompt && pageSize < 3
+    // An unknown pane size can't be checked, so it counts as too small: no run buttons.
+    const tooSmall = isWritePrompt && (knownRows === undefined || pageSize < 3)
     const shown = ask?.kind === 'write' && !tooLong && !tooSmall ? pageFrom(sqlView, ask.shownFrom, promptWidth, pageSize) : { rows: [] as string[], end: sqlView.length }
     const sqlSeen = isWritePrompt && !tooLong && !tooSmall && shown.end >= sqlView.length
     const dbList = target ? (target.databases.length ? target.databases : sc?.dbs ?? []) : []
@@ -920,6 +924,7 @@ export const register: Register = on => {
             <Text bold color="error" wrap="truncate-end">{`Writes are locked for ${asciiView(ask.serverName)}`}</Text>
             <Text wrap="truncate-end">{asciiView(`${ask.verb} on ${ask.target} / ${ask.database || '(no database)'}${ask.production ? ' · production' : ''}`)}</Text>
             {ask.noWhere ? <Text bold color="error" wrap="truncate-end">{`No WHERE clause: this ${ask.verb === 'DELETE' ? 'deletes' : 'changes'} every row of the table.`}</Text> : null}
+            {ask.calls.length ? <Text color="warning" wrap="truncate-end">{asciiView(`Calls ${ask.calls.map(c => `${c}()`).join(', ')}: a stored function can change more than this statement shows.`)}</Text> : null}
             {tooLong ? (
               <Text color="error" wrap="truncate-end">{`statement: ${sqlView.length} characters, too long to review here, so it can't be run from the console.`}</Text>
             ) : tooSmall ? (
@@ -956,6 +961,9 @@ export const register: Register = on => {
                   onPress={() =>
                     void (async () => {
                       const a = ask
+                      // Acts only on the prompt this drawing showed; one cancelled or replaced since does nothing.
+                      const now = await read($, confirm)
+                      if (!now || JSON.stringify(now) !== JSON.stringify(a)) return $.ui.toast('That prompt was cancelled; nothing ran.')
                       await update($, confirm, () => null)
                       const t = (await readServers($)).find(x => x.id === a.serverId)
                       if (!t) return $.ui.toast(`Not run: server "${a.serverName}" is gone from ${configFile}.`)
@@ -971,6 +979,8 @@ export const register: Register = on => {
                   onPress={() =>
                     void (async () => {
                       const a = ask
+                      const now = await read($, confirm)
+                      if (!now || JSON.stringify(now) !== JSON.stringify(a)) return $.ui.toast('That prompt was cancelled; nothing ran.')
                       await update($, confirm, () => null)
                       const t = (await readServers($)).find(x => x.id === a.serverId)
                       if (!t || credentialFingerprint(t) !== a.fingerprint) return $.ui.toast(`Not run: server "${a.serverName}" changed in ${configFile}. Run it again.`)

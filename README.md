@@ -34,6 +34,14 @@ Its buttons, which appear only once you've seen the whole statement:
 
 Unlocks live in memory only: no file the console reads can unlock writes, and agents can't approve them.
 
+**Production detection** comes from the `tag` you set, and is remembered by server id and `host:port`, also across sessions. A second entry that reaches the same server by another name or an IP address isn't recognized, so tag every entry that points at production.
+
+**Extra checks on writes:**
+- The server's own schemas (`mysql`, `sys`, `performance_schema`, `information_schema`) are never written.
+- Optimizer hints (`/*+ … */`) are refused.
+- The prompt names any call to a function that isn't built in, since a stored function can change more than the statement shows.
+- The no-`WHERE` warning ignores a `WHERE` inside a subquery and treats `WHERE 1` / `TRUE` / `1=1` as no `WHERE` at all.
+
 **Always refused, unlocked or not:**
 - DDL (`CREATE`, `ALTER`, `DROP`, `TRUNCATE`, `RENAME`)
 - privileges

@@ -23,7 +23,7 @@ export type SqlView = {
 export type SqlServer = { id: string; name: string; host: string; tag?: 'production' | 'staging' | 'development' | 'local'; databases: string[] }
 
 // A write the person must approve: exactly this statement, on this server entry and database.
-export type SqlWritePrompt = { kind: 'write'; serverId: string; serverName: string; target: string; fingerprint: string; database: string; sql: string; verb: string; noWhere: boolean; production: boolean; shownFrom: number }
+export type SqlWritePrompt = { kind: 'write'; serverId: string; serverName: string; target: string; fingerprint: string; database: string; sql: string; verb: string; noWhere: boolean; calls: string[]; production: boolean; shownFrom: number }
 export type SqlTrustPrompt = { kind: 'trust'; serverId: string; serverName: string; target: string; source: string; fingerprint: string; then: 'run' | 'schema'; sql: string; database: string; mode: 'read' | 'write' }
 export type SqlConfirm = SqlWritePrompt | SqlTrustPrompt
 // A session unlock holds for one server entry exactly as it was.

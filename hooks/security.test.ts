@@ -170,6 +170,22 @@ describe('writes', () => {
     expect(w.mysql()).toEqual([])
   })
 
+  test('without a known pane size there are no run buttons', async ($, on) => {
+    const w = world(on, [{ id: 'dev', name: 'Dev', host: 'db.dev', databases: ['app'] }])
+    await $.tool.call({ tool: TOOL, action: 'status', filepath: 'w.json' } as any)
+    const ui: any = await $.ui.mount(PANE)
+    await ui.post({ type: 'run', text: 'DELETE FROM t WHERE id = 1', row: 0 }, { in: 'editor' })
+    expect(await ui.find({ key: 'write-once' })).toBeUndefined()
+    expect(w.mysql()).toEqual([])
+  })
+
+  test('a write naming a system schema never prompts or runs', async ($, on) => {
+    const { w, ui } = await open($, [{ id: 'dev', name: 'Dev', host: 'db.dev', databases: ['app'] }], on)
+    await ui.post({ type: 'run', text: "UPDATE mysql.user SET authentication_string = '' WHERE user = 'root'", row: 0 }, { in: 'editor' })
+    expect(await ui.find({ key: 'write-once' })).toBeUndefined()
+    expect(w.mysql()).toEqual([])
+  })
+
   test('the agent tool cannot run or unlock a write', async ($, on) => {
     const w = world(on, [{ id: 'dev', name: 'Dev', host: 'db.dev', databases: ['app'] }])
     await $.tool.call({ tool: TOOL, action: 'open', filepath: 'agent.json' } as any)

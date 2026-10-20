@@ -173,20 +173,52 @@ const ALLOWED_IN_WRITE = new Set(['INSERT', 'UPDATE', 'DELETE', 'INTO', 'SET'])
 
 export type Classified =
   | { kind: 'read' }
-  | { kind: 'write'; verb: 'INSERT' | 'UPDATE' | 'DELETE'; noWhere: boolean }
+  | { kind: 'write'; verb: 'INSERT' | 'UPDATE' | 'DELETE'; noWhere: boolean; calls: string[] }
   | { kind: 'refused'; reason: string }
 
-export function classifyStatement(sql: string): Classified {
+// Schemas whose tables are the server's own (accounts, privileges, instrumentation).
+export const SYSTEM_SCHEMAS = ['mysql', 'sys', 'performance_schema', 'information_schema']
+const SYSTEM_REF = new RegExp(`(^|[^A-Za-z0-9_$])\`?(${SYSTEM_SCHEMAS.join('|')})\`?\\s*\\.`, 'i')
+
+// Built-in functions an INSERT / UPDATE / DELETE may call without a warning. Anything else may be
+// a stored function, which can write more on its own, so the prompt names it.
+const BUILTINS = new Set(('ABS ACOS ADDDATE ADDTIME AES_DECRYPT AES_ENCRYPT ANY_VALUE ASCII ASIN ATAN ATAN2 AVG BIN BIT_AND BIT_COUNT BIT_LENGTH BIT_OR BIT_XOR CAST CEIL CEILING CHAR CHAR_LENGTH CHARACTER_LENGTH COALESCE CONCAT CONCAT_WS CONV CONVERT CONVERT_TZ COS COT COUNT CRC32 CURDATE CURRENT_DATE CURRENT_TIME CURRENT_TIMESTAMP CURTIME DATE DATE_ADD DATE_FORMAT DATE_SUB DATEDIFF DAY DAYNAME DAYOFMONTH DAYOFWEEK DAYOFYEAR DEGREES ELT EXP EXTRACT FIELD FIND_IN_SET FLOOR FORMAT FROM_BASE64 FROM_DAYS FROM_UNIXTIME GREATEST GROUP_CONCAT HEX HOUR IF IFNULL IN INET_ATON INET_NTOA INSERT INSTR INTERVAL ISNULL JSON_ARRAY JSON_ARRAY_APPEND JSON_ARRAY_INSERT JSON_CONTAINS JSON_CONTAINS_PATH JSON_EXTRACT JSON_INSERT JSON_KEYS JSON_LENGTH JSON_MERGE_PATCH JSON_MERGE_PRESERVE JSON_OBJECT JSON_QUOTE JSON_REMOVE JSON_REPLACE JSON_SEARCH JSON_SET JSON_TYPE JSON_UNQUOTE JSON_VALID LAST_DAY LAST_INSERT_ID LCASE LEAST LEFT LENGTH LN LOCALTIME LOCALTIMESTAMP LOCATE LOG LOG10 LOG2 LOWER LPAD LTRIM MAKEDATE MAKETIME MAX MD5 MICROSECOND MID MIN MINUTE MOD MONTH MONTHNAME NOW NULLIF OCT ORD PERIOD_ADD PERIOD_DIFF PI POSITION POW POWER QUARTER QUOTE RADIANS RAND REGEXP_INSTR REGEXP_LIKE REGEXP_REPLACE REGEXP_SUBSTR REPEAT REPLACE REVERSE RIGHT ROUND RPAD RTRIM SEC_TO_TIME SECOND SHA1 SHA2 SIGN SIN SPACE SQRT STD STDDEV STR_TO_DATE STRCMP SUBDATE SUBSTR SUBSTRING SUBSTRING_INDEX SUBTIME SUM SYSDATE TAN TIME TIME_FORMAT TIME_TO_SEC TIMEDIFF TIMESTAMP TIMESTAMPADD TIMESTAMPDIFF TO_BASE64 TO_DAYS TO_SECONDS TRIM TRUNCATE UCASE UNHEX UNIX_TIMESTAMP UPPER USER UTC_DATE UTC_TIME UTC_TIMESTAMP UUID UUID_SHORT UUID_TO_BIN BIN_TO_UUID VALUES VAR_POP VAR_SAMP VARIANCE WEEK WEEKDAY WEEKOFYEAR YEAR YEARWEEK ' +
+  'EXISTS NOT AND OR SELECT FROM WHERE AS ON USING JOIN LIMIT ORDER BY GROUP HAVING DISTINCT ALL ANY SOME CASE WHEN THEN ELSE END INTO SET UPDATE DELETE KEY DUPLICATE NULL TRUE FALSE BETWEEN LIKE IS REGEXP RLIKE DIV').split(' '))
+
+// The skeleton with everything inside parentheses removed: what the statement says at its own level.
+function topLevel(sk: string): string {
+  let depth = 0
+  let out = ''
+  for (const c of sk) {
+    if (c === '(') depth++
+    else if (c === ')') depth = Math.max(0, depth - 1)
+    else if (depth === 0) out += c
+  }
+  return out
+}
+
+export function classifyStatement(sql: string, database?: string): Classified {
   if (!readGuard(sql)) return { kind: 'read' }
   const st = structure(sql)
   if ('refused' in st) return { kind: 'refused', reason: st.refused }
-  const { words } = st
+  const { words, body } = st
   const verb = words[0]
   if (!verb || !WRITE_VERBS.has(verb)) return { kind: 'refused', reason: readGuard(sql)! }
   for (const w of words) {
     if (WRITE_WORDS.has(w) && !ALLOWED_IN_WRITE.has(w)) return { kind: 'refused', reason: `Not sent: it uses ${w}. The console runs only plain INSERT, UPDATE and DELETE, never ${w}.` }
   }
-  return { kind: 'write', verb: verb as 'INSERT' | 'UPDATE' | 'DELETE', noWhere: verb !== 'INSERT' && !words.includes('WHERE') }
+  // The server's own tables (accounts, privileges) are never written, whether named or selected.
+  if (database && SYSTEM_SCHEMAS.includes(database.toLowerCase())) return { kind: 'refused', reason: `Not sent: ${database} is a system schema; the console never writes to it.` }
+  if (SYSTEM_REF.test(sql)) return { kind: 'refused', reason: `Not sent: it names a system schema (${SYSTEM_SCHEMAS.join(', ')}); the console never writes to them.` }
+  // Optimizer hints like /*+ SET_VAR(foreign_key_checks=OFF) */ change how the write runs.
+  if (/\/\*\+/.test(sql)) return { kind: 'refused', reason: 'Not sent: optimizer hints (/*+ … */) can change session settings for the write; remove them.' }
+  // The warning counts only a WHERE at the statement's own level, and one that filters nothing.
+  const top = topLevel(body)
+  const m = /\bWHERE\b([\s\S]*)$/i.exec(top)
+  const filtersNothing = !!m && /^\s*(?:1|TRUE|1\s*=\s*1|'?1'?\s*=\s*'?1'?|_str_\s*=\s*_str_)\s*(?:\b(?:ORDER|LIMIT)\b[\s\S]*)?$/i.test(m[1]!)
+  const noWhere = verb !== 'INSERT' && (!m || filtersNothing)
+  const calls = [...new Set([...body.matchAll(/([A-Za-z_][A-Za-z0-9_$]*(?:\s*\.\s*[A-Za-z_][A-Za-z0-9_$]*)?)\s*\(/g)].map(x => x[1]!.replace(/\s+/g, '')).filter(n => n.includes('.') || !BUILTINS.has(n.toUpperCase())))]
+  return { kind: 'write', verb: verb as 'INSERT' | 'UPDATE' | 'DELETE', noWhere, calls }
 }
 
 // ---- running ----
