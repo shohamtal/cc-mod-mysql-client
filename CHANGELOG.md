@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.2
+
+- **Copy works in every terminal:** copies go to `pbcopy` / `wl-copy` / `xclip` / `clip.exe` first, and the terminal's OSC 52 only as a fallback. OSC 52 is off by default in iTerm2 and missing in Terminal.app, where copying looked like it worked but left the clipboard empty.
+- **A mouse selection copies itself:** Cmd+C belongs to the terminal and never reaches the pane, so selecting with the mouse copies, unless the selection looks like it holds a secret (`IDENTIFIED BY`, `PASSWORD`). `ctrl+c` still copies the selection, or the line.
+- **Drag the result sideways** to scroll its columns. Claude Code doesn't pass a sideways trackpad swipe to mods; ← → still work.
+
 ## 0.2.1
 
 - **Renamed** to `mysql-client` (repo `cc-mod-mysql-client`), so people looking for a MySQL client, SQL client or SQL editor find it. `/sql` is unchanged. The agent tool is now `mcp__mysql-client__console`, and the credentials you allowed are asked for once more. Servers remembered as production start fresh too: a server that is no longer tagged production can be unlocked for a session again.

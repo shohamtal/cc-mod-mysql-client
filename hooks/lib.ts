@@ -405,6 +405,7 @@ export function normalizeServer(raw: unknown): DbServer | undefined {
 export const tagColor = (tag?: ServerTag) => (tag === 'production' ? 'error' : tag === 'staging' ? 'warning' : tag === 'development' ? 'success' : undefined)
 
 // Clipboard readers, tried in turn: macOS, Wayland, X11, Windows.
+export const COPY_COMMANDS = [['pbcopy'], ['wl-copy'], ['xclip', '-i', '-selection', 'clipboard'], ['clip.exe']]
 export const PASTE_COMMANDS = [['pbpaste'], ['wl-paste', '-n'], ['xclip', '-o', '-selection', 'clipboard'], ['powershell.exe', '-NoProfile', '-Command', 'Get-Clipboard']]
 
 export const MYSQL_CANDIDATES = ['/opt/homebrew/opt/mysql-client/bin/mysql', '/opt/homebrew/bin/mysql', '/usr/local/opt/mysql-client/bin/mysql', '/usr/local/bin/mysql', '/usr/bin/mysql']

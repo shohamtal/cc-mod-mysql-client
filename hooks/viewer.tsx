@@ -22,8 +22,18 @@ const Viewer: ClientModule<Props, number> = (props, surface) => {
   const { Box, Text } = surface.elements
 
   surface.onKey((k: ClientKeyEvent) => surface.post({ type: 'key', key: k.key, ctrl: !!k.ctrl, shift: !!k.shift, meta: !!k.meta }))
+  // Terminals don't pass a sideways swipe to mods, so dragging the result pans it: a press that
+  // doesn't move is a click (open or close a row), one that moves left or right scrolls the columns.
+  let press: { x: number; y: number; moved: boolean } | undefined
   surface.onPointer(ev => {
-    if (ev.type === 'down' && ev.y < props.lines.length) surface.post({ type: 'click', y: ev.y, x: ev.x })
+    if (ev.type === 'down' && ev.button === 'left') press = { x: ev.x, y: ev.y, moved: false }
+    else if (ev.type === 'move' && press && ev.button === 'left' && ev.x !== press.x && (press.moved || Math.abs(ev.x - press.x) >= 2)) {
+      surface.post({ type: 'pan', by: press.x - ev.x })
+      press = { ...press, x: ev.x, moved: true }
+    } else if (ev.type === 'up' && press) {
+      if (!press.moved && press.y < props.lines.length) surface.post({ type: 'click', y: press.y, x: press.x })
+      press = undefined
+    }
   })
 
   return (
