@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.5
+
+- **A save that someone else's save lands in the middle of no longer overwrites it:** the pane reads the session file again just before writing. If it changed, the pane merges again on top of the new version, and after three tries it gives up without writing and says so. An editor save that finds an outside change no longer writes at all. Claude Code has no atomic file write, so only a save landing in the instant between that last read and the write can still be lost. Reported in the catalogue review.
+- **A failed save's toast can't stop later saves.**
+
 ## 0.2.4
 
 Fixes from an external review, each reproduced by a test that fails on 0.2.3:
