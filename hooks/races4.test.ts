@@ -59,6 +59,12 @@ test('an outside save while a finished query is being recorded is kept, with las
 })
 test('a file that keeps changing is never overwritten, and the pane says so', async ($, on) => {
   const w = await world($, on, 10, true)
-  expect(JSON.parse(w.files.get(FILE)!).query).toContain('concurrent_edit')
-  expect(w.toasts.join('\n')).toContain('keeps changing')
+  const saved = JSON.parse(w.files.get(FILE)!)
+  expect(saved.query).toMatch(/concurrent_edit/)
+  expect(saved.lastRun).toBeUndefined()
+  expect(w.toasts.join('\n')).toContain('kept changing')
+})
+test('an editor save never overwrites a file that keeps changing', async ($, on) => {
+  const w = await world($, on, 10)
+  expect(JSON.parse(w.files.get(FILE)!).query).toMatch(/concurrent_edit/)
 })

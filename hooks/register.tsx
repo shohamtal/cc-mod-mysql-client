@@ -387,22 +387,24 @@ async function attach($: EngineInterface, file?: string, config?: string): Promi
 // on itself. A failed save tells the person, since nothing else would.
 let saving: Promise<void> = Promise.resolve()
 let badJson = ''
+// A toast that can't show must not stop the saves after it.
+function tell($: EngineInterface, text: string) {
+  try {
+    void Promise.resolve($.ui.toast(text)).catch(() => undefined)
+  } catch {
+    // nothing else to tell with
+  }
+}
+
 function saveSession($: EngineInterface, extra: Record<string, unknown> = {}, file = sessionFile): Promise<void> {
   const run = saving.then(() => saveSessionNow($, extra, file))
-  saving = run.catch(err => {
-    try {
-      $.ui.toast(`Not saved: ${file}: ${String(err).slice(0, 160)}`)
-    } catch {
-      // the chain must go on even if the toast can't show
-    }
-  })
+  saving = run.catch(err => tell($, `Not saved: ${file}: ${String(err).slice(0, 160)}`))
   return run
 }
 
 async function saveSessionNow($: EngineInterface, extra: Record<string, unknown>, file: string) {
   if (!file) return
-  const mine = { server: await read($, server), database: await read($, database), cursorRow: await read($, cursorRow), query: await read($, query) }
-  // The engine has no atomic write, so the file is read again just before the write: when someone
+  // Claude Code has no atomic write, so the file is read again just before the write: when someone
   // else saved in between, the merge starts over on top of their save, and after three tries the pane
   // gives up rather than overwrite them.
   for (let tries = 0; ; tries++) {
@@ -416,7 +418,7 @@ async function saveSessionNow($: EngineInterface, extra: Record<string, unknown>
       old = raw === undefined ? {} : (JSON.parse(raw) ?? {})
     } catch {
       // A hand edit with a JSON typo is never replaced by the pane's state; said once per broken version.
-      if (badJson !== raw) $.ui.toast(`Not saved: ${file} is not valid JSON. Fix it, or delete it to start over.`)
+      if (badJson !== raw) tell($, `Not saved: ${file} is not valid JSON. Fix it, or delete it to start over.`)
       badJson = raw ?? ''
       return
     }
@@ -426,10 +428,12 @@ async function saveSessionNow($: EngineInterface, extra: Record<string, unknown>
       (raw !== undefined && seenText[file] !== undefined && raw !== seenText[file])
     // Nothing of the pane's to add to their save: it is left as they wrote it.
     if (!external || Object.keys(extra).length) {
-      const text = JSON.stringify({ ...old, ...(external ? {} : mine), ...extra }, null, 2) + '\n'
+      // Read after the file, as a sync that lands first has then already loaded an outside save into the pane.
+      const mine = external ? {} : { server: await read($, server), database: await read($, database), cursorRow: await read($, cursorRow), query: await read($, query) }
+      const text = JSON.stringify({ ...old, ...mine, ...extra }, null, 2) + '\n'
       if ((await $.fs.read(file).catch(() => undefined)) !== raw) {
         if (tries < 2) continue
-        $.ui.toast(`Not saved: ${file} keeps changing. Your edits are still in the pane.`)
+        tell($, `Not saved: ${file} kept changing while the pane saved, so the query's result or menu pick was not recorded.`)
         return
       }
       await write($, file, text)
