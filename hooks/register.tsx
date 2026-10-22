@@ -387,40 +387,63 @@ async function attach($: EngineInterface, file?: string, config?: string): Promi
 // on itself. A failed save tells the person, since nothing else would.
 let saving: Promise<void> = Promise.resolve()
 let badJson = ''
+// A toast that can't show must not stop the saves after it.
+function tell($: EngineInterface, text: string) {
+  try {
+    void Promise.resolve($.ui.toast(text)).catch(() => undefined)
+  } catch {
+    // nothing else to tell with
+  }
+}
+
 function saveSession($: EngineInterface, extra: Record<string, unknown> = {}, file = sessionFile): Promise<void> {
   const run = saving.then(() => saveSessionNow($, extra, file))
-  saving = run.catch(err => $.ui.toast(`Not saved: ${file}: ${String(err).slice(0, 160)}`))
+  saving = run.catch(err => tell($, `Not saved: ${file}: ${String(err).slice(0, 160)}`))
   return run
 }
 
 async function saveSessionNow($: EngineInterface, extra: Record<string, unknown>, file: string) {
   if (!file) return
-  // Someone else (the agent, another editor) wrote the file since this pane last read or wrote it:
-  // their editor fields win, only `extra` (a run's lastRun, a menu pick) is merged in, and the pane
-  // reloads them. The mtime is read before the text, so a write in between counts as theirs.
-  const mtime = await $.fs.stat(file).then(s => s.mtimeMs, () => undefined)
-  const raw = await $.fs.read(file).catch(() => undefined)
-  let old: Record<string, unknown> = {}
-  try {
-    old = raw === undefined ? {} : (JSON.parse(raw) ?? {})
-  } catch {
-    // A hand edit with a JSON typo is never replaced by the pane's state; said once per broken version.
-    if (badJson !== raw) $.ui.toast(`Not saved: ${file} is not valid JSON. Fix it, or delete it to start over.`)
-    badJson = raw ?? ''
+  // Claude Code has no atomic write, so the file is read again just before the write: when someone
+  // else saved in between, the merge starts over on top of their save, and after three tries the pane
+  // gives up rather than overwrite them.
+  for (let tries = 0; ; tries++) {
+    // Someone else (the agent, another editor) wrote the file since this pane last read or wrote it:
+    // their editor fields win, only `extra` (a run's lastRun, a menu pick) is merged in, and the pane
+    // reloads them. The mtime is read before the text, so a write in between counts as theirs.
+    const mtime = await $.fs.stat(file).then(s => s.mtimeMs, () => undefined)
+    const raw = await $.fs.read(file).catch(() => undefined)
+    let old: Record<string, unknown> = {}
+    try {
+      old = raw === undefined ? {} : (JSON.parse(raw) ?? {})
+    } catch {
+      // A hand edit with a JSON typo is never replaced by the pane's state; said once per broken version.
+      if (badJson !== raw) tell($, `Not saved: ${file} is not valid JSON. Fix it, or delete it to start over.`)
+      badJson = raw ?? ''
+      return
+    }
+    const external =
+      file !== sessionFile ||
+      (mtime !== undefined && seen[file] !== undefined && mtime !== seen[file]) ||
+      (raw !== undefined && seenText[file] !== undefined && raw !== seenText[file])
+    // Nothing of the pane's to add to their save: it is left as they wrote it.
+    if (!external || Object.keys(extra).length) {
+      // Read after the file, as a sync that lands first has then already loaded an outside save into the pane.
+      const mine = external ? {} : { server: await read($, server), database: await read($, database), cursorRow: await read($, cursorRow), query: await read($, query) }
+      const text = JSON.stringify({ ...old, ...mine, ...extra }, null, 2) + '\n'
+      if ((await $.fs.read(file).catch(() => undefined)) !== raw) {
+        if (tries < 2) continue
+        tell($, `Not saved: ${file} kept changing while the pane saved, so the query's result or menu pick was not recorded.`)
+        return
+      }
+      await write($, file, text)
+    }
+    if (external && file === sessionFile) {
+      delete seen[file]
+      delete seenText[file]
+      await sync($)
+    }
     return
-  }
-  const external =
-    file !== sessionFile ||
-    (mtime !== undefined && seen[file] !== undefined && mtime !== seen[file]) ||
-    (raw !== undefined && seenText[file] !== undefined && raw !== seenText[file])
-  const mine = external
-    ? {}
-    : { server: await read($, server), database: await read($, database), cursorRow: await read($, cursorRow), query: await read($, query) }
-  await write($, file, JSON.stringify({ ...old, ...mine, ...extra }, null, 2) + '\n')
-  if (external && file === sessionFile) {
-    delete seen[file]
-    delete seenText[file]
-    await sync($)
   }
 }
 
