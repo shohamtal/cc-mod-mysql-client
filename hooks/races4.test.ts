@@ -99,3 +99,36 @@ test('a save drops the lastRun older versions wrote', async ($, on) => {
   expect(saved.query).toBe('SELECT 1')
   expect(saved.lastRun).toBeUndefined()
 })
+function bare(on: any, seed: Record<string, string> = {}, links: Record<string, string> = {}) {
+  mock.env(on, { HOME }); mock.store(on); mock.clock(on)
+  const files = new Map<string, string>([[`${BASE}/servers.json`, JSON.stringify({ servers: [] })], ...Object.entries(seed)])
+  const toasts: string[] = []
+  on('fs.exists', ($: any, e: any) => ({ value: files.has(e.path) }))
+  on('fs.read', ($: any, e: any) => { if (!files.has(e.path)) throw new Error('ENOENT'); return { value: files.get(e.path)! } })
+  on('fs.write', ($: any, e: any) => { files.set(e.path, e.text); return { value: undefined } })
+  on('fs.stat', ($: any, e: any) => {
+    if (links[e.path]) return { value: { kind: 'dir', size: 1, mtimeMs: 0, isLink: true, realPath: links[e.path] } }
+    if (!files.has(e.path) && e.path !== BASE && e.path !== `${BASE}/sessions`) throw new Error('ENOENT')
+    return { value: { kind: 'file', size: 1, mtimeMs: 0, isLink: false, realPath: e.path } }
+  })
+  on('ui.toast', ($: any, e: any) => { toasts.push(e.text); return { value: undefined } })
+  on('session.start', (_$: any, e: any) => ({ cwd: e.cwd }))
+  on('command.register', () => ({ value: undefined }))
+  on('tool.register', () => ({ value: undefined }))
+  return { files, toasts }
+}
+test('a new file under a symlinked folder in sessions/ counts where the link points', async ($, on) => {
+  const w = bare(on, {}, { [`${BASE}/sessions/link`]: '/elsewhere' })
+  const out: any = await $.tool.call({ tool: TOOL, action: 'status', filepath: 'link/new.json' } as any)
+  expect(out.isError).toBe(true)
+  expect([...w.files.keys()].filter(k => k.includes('new'))).toEqual([])
+})
+test('a saved console that can no longer be opened gives way to the default one, and says why', async ($, on) => {
+  const w = bare(on, { [`${BASE}/other.json`]: JSON.stringify({ servers: [] }) })
+  await $.tool.call({ tool: TOOL, action: 'status', filepath: 'mine.json', configfilepath: 'other.json' } as any)
+  w.files.delete(`${BASE}/other.json`)
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true } as any)
+  expect(w.toasts.join('\n')).toContain('Opened the default console instead')
+  const out: any = await $.tool.call({ tool: TOOL, action: 'status' } as any)
+  expect(out.result).toContain(`${BASE}/sessions/default.json`)
+})
