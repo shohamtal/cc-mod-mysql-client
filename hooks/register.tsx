@@ -133,6 +133,16 @@ async function copyText($: EngineInterface, text: string): Promise<boolean> {
   return (await $.ui.copy({ text })).isCopied
 }
 
+// Where a path really lands: the nearest existing folder's real path plus the rest, so a new file
+// under a symlinked folder counts where the link points.
+async function realPathOf($: EngineInterface, p: string): Promise<string> {
+  const st = await $.fs.stat(p, { resolve: true }).catch(() => undefined)
+  if (st) return st.realPath ?? p
+  const cut = p.lastIndexOf('/')
+  if (cut <= 0) return p
+  return `${await realPathOf($, p.slice(0, cut))}/${p.slice(cut + 1)}`
+}
+
 async function resolvePath($: EngineInterface, p: string, under: string): Promise<string> {
   // HOME on macOS / Linux; USERPROFILE on Windows.
   const home = (await $.env.get('HOME')) ?? (await $.env.get('USERPROFILE')) ?? ''
@@ -350,6 +360,15 @@ async function ensureBase($: EngineInterface) {
 
 // Points this session's console at a session file and a config file, creating the session file.
 // Answers why it could not, or undefined.
+// The console this session had before a restart. One that can't be opened any more (its name is
+// now refused, or its files are gone) gives way to the default console, and the person is told why.
+async function reattach($: EngineInterface, file?: string, config?: string) {
+  const refused = await attach($, file, config).catch(err => String(err))
+  if (!refused) return
+  const fallback = (await attach($, 'default.json', config).catch(err => String(err))) && (await attach($, 'default.json', 'servers.json').catch(err => String(err)))
+  tell($, fallback ? `SQL console: ${refused}` : `SQL console: ${refused}. Opened the default console instead.`)
+}
+
 async function attach($: EngineInterface, file?: string, config?: string): Promise<string | undefined> {
   await ensureBase($)
   const kept = await read($, paths)
@@ -739,7 +758,7 @@ export const register: Register = on => {
     })
     const kept = await read($, paths)
     // A broken file must not stop the watcher for the whole session.
-    await attach($, kept?.file, kept?.config).catch(() => undefined)
+    await reattach($, kept?.file, kept?.config)
     $.clock.every(600, () => void sync($).catch(() => undefined))
     return next(e)
   })
@@ -758,8 +777,8 @@ export const register: Register = on => {
     const inside = async (p: string | undefined, under: string, root: string) => {
       if (!p) return true
       const want = await resolvePath($, p.endsWith('.json') || under === base ? p : `${p}.json`, under)
-      const real = (await $.fs.stat(want, { resolve: true }).catch(() => undefined))?.realPath ?? want
-      const top = (await $.fs.stat(root, { resolve: true }).catch(() => undefined))?.realPath ?? root
+      const real = await realPathOf($, want)
+      const top = await realPathOf($, root)
       return !/(^|\/)\.\.(\/|$)/.test(want) && real.startsWith(top + '/')
     }
     if (!(await inside(input.filepath, `${base}/sessions`, base))) return { result: `filepath must be inside ${base}/sessions/. Ask the user to open other files with /sql --filepath.`, isError: true }

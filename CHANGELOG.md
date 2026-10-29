@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.1
+
+- **A new console under a symlinked folder in `sessions/` counts where the link points:** the agent tool resolves the nearest existing folder's real path, so a link can't carry a new file outside the mod's folder.
+- **A saved console that can't be opened any more** (its name is now refused, or its config is gone) gives way to the default console when Claude Code starts, and a toast says why, instead of leaving the pane empty.
+
 ## 0.3.0
 
 - **Running a statement never writes the session file.** The run is recorded only in `<name>.result.json`, which already held everything `lastRun` did. `lastRun` is gone from the session file. The session file is shared with the agent and other editors, and no write of the pane's could be made safe against a save landing after its last read, so a run no longer writes it at all. The session file is now written only for your own edits and menu picks. Reported in the catalogue review.
