@@ -252,7 +252,7 @@ describe('session file edits made while a query runs', () => {
     expect(saved.query).toBe('SELECT 3 AS agent')
   })
 
-  test('a finished query records lastRun without replacing a newer query someone else wrote', async ($, on) => {
+  test('a finished query leaves a newer query someone else wrote, and records the run in the result file', async ($, on) => {
     const file = `${BASE}/sessions/race.json`
     const w = world(on, [{ id: 'local', name: 'Local', host: 'localhost', databases: ['app'] }], {
       duringMysql: (files, mtimes) => {
@@ -266,7 +266,8 @@ describe('session file edits made while a query runs', () => {
     await ui.post({ type: 'run', text: 'SELECT 1', row: 0 }, { in: 'editor' })
     const saved = JSON.parse(w.files.get(file)!)
     expect(saved.query).toBe('SELECT 2 AS newer')
-    expect(saved.lastRun).toBeDefined()
+    expect(saved.lastRun).toBeUndefined()
+    expect(JSON.parse(w.files.get(file.replace('.json', '.result.json'))!).sql).toBe('SELECT 1')
     expect(JSON.stringify((await ui.find({ key: 'editor' }))?.props?.props)).toContain('SELECT 2 AS newer')
   })
 })

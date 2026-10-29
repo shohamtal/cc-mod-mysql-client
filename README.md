@@ -123,9 +123,11 @@ You need the `mysql` client (`brew install mysql-client` on macOS, `apt install 
 
 | File | Holds |
 |---|---|
-| `~/.claude/mods/sql/sessions/<name>.json` | `{ server, database, cursorRow, query, lastRun }` |
+| `~/.claude/mods/sql/sessions/<name>.json` | `{ server, database, cursorRow, query }` |
 | `~/.claude/mods/sql/sessions/<name>.result.json` | `{ columns, rows, rowCount, limited, ms, error?, sql, at }` |
 | `~/.claude/mods/sql/schema.json` | table and column names for autocomplete, per server |
+
+The pane writes the session file only for your own edits and menu picks. Running a statement writes only the result file, so it never overwrites a query the agent just wrote.
 
 ## Develop
 
