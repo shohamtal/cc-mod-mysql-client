@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.0
+
+- **Running a statement never writes the session file.** The run is recorded only in `<name>.result.json`, which already held everything `lastRun` did. `lastRun` is gone from the session file. The session file is shared with the agent and other editors, and no write of the pane's could be made safe against a save landing after its last read, so a run no longer writes it at all. The session file is now written only for your own edits and menu picks. Reported in the catalogue review.
+
 ## 0.2.5
 
 - **A save that someone else's save lands in the middle of no longer overwrites it:** the pane reads the session file again just before writing. If it changed, the pane merges again on top of the new version, and after three tries it gives up without writing and says the result or menu pick was not recorded. A toast that fails to show no longer stops later saves. An editor save that finds an outside change no longer writes at all. Claude Code has no atomic file write, so only a save landing in the instant between that last read and the write can still be lost. Reported in the catalogue review.

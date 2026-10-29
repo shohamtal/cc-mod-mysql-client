@@ -84,7 +84,7 @@ const HELP = `**Top bar**
 
 **Writes are locked** — reads (SELECT, WITH, SHOW, DESCRIBE, EXPLAIN, TABLE, VALUES) run one statement at a time inside a read-only session and transaction. A write (INSERT, UPDATE, DELETE, REPLACE, CREATE, ALTER, DROP, TRUNCATE, RENAME, GRANT, REVOKE, CALL) opens a prompt that shows the exact statement: **Run this statement once**, **Unlock for this session** (not on production servers) or **Cancel**; 🔒 / 🔓 shows and resets the lock. DDL can't be rolled back, and the prompt says so. Always refused: files (LOAD, OUTFILE, LOAD_FILE), session or server control (SET, transactions, locks, KILL, SHUTDOWN, plugins), server objects, creating routines / triggers / events, system schemas, and more than one statement.
 
-**Files** — one JSON session file per console (default \`~/.claude/mods/sql/sessions/default.json\`: server, database, cursorRow, query, lastRun) + \`<name>.result.json\`; servers in \`~/.claude/mods/sql/servers.json\`. Edits show here live.
+**Files** — one JSON session file per console (default \`~/.claude/mods/sql/sessions/default.json\`: server, database, cursorRow, query) + \`<name>.result.json\` (the last run); servers in \`~/.claude/mods/sql/servers.json\`. Edits show here live.
 
 **Own console per session/agent** — \`/sql --filepath <name>.json [--configfilepath <servers>.json]\`.
 
@@ -409,7 +409,7 @@ async function saveSessionNow($: EngineInterface, extra: Record<string, unknown>
   // gives up rather than overwrite them.
   for (let tries = 0; ; tries++) {
     // Someone else (the agent, another editor) wrote the file since this pane last read or wrote it:
-    // their editor fields win, only `extra` (a run's lastRun, a menu pick) is merged in, and the pane
+    // their editor fields win, only `extra` (a menu pick) is merged in, and the pane
     // reloads them. The mtime is read before the text, so a write in between counts as theirs.
     const mtime = await $.fs.stat(file).then(s => s.mtimeMs, () => undefined)
     const raw = await $.fs.read(file).catch(() => undefined)
@@ -433,7 +433,7 @@ async function saveSessionNow($: EngineInterface, extra: Record<string, unknown>
       const text = JSON.stringify({ ...old, ...mine, ...extra }, null, 2) + '\n'
       if ((await $.fs.read(file).catch(() => undefined)) !== raw) {
         if (tries < 2) continue
-        tell($, `Not saved: ${file} kept changing while the pane saved, so the query's result or menu pick was not recorded.`)
+        tell($, `Not saved: ${file} kept changing while the pane saved, so the menu pick was not saved.`)
         return
       }
       await write($, file, text)
@@ -556,7 +556,6 @@ async function runStatement($: EngineInterface, target: DbServer, db: string, sq
 }
 
 async function record($: EngineInterface, target: DbServer, db: string, sql: string, out: { columns: string[]; rows: string[][]; ms: number; error?: string; limited?: boolean }, at = { file: sessionFile, result: resultFile() }) {
-  const name = target.id
   const next: SqlResult = { id: Date.now(), server: target.name, database: db, sql, ...out, at: new Date().toISOString() }
   await update($, running, () => false)
   if (at.file === sessionFile) {
@@ -564,8 +563,11 @@ async function record($: EngineInterface, target: DbServer, db: string, sql: str
     await update($, view, v => ({ ...EMPTY_VIEW, search: v?.search ?? '' }))
   }
   const { id: _i, ...file } = next
+  // Only the result file: a run never writes the session file, which the agent and other editors
+  // share with the pane and no write of the pane's could make safe against them.
   await write($, at.result, JSON.stringify({ ...file, rowCount: next.rows.length }, null, 2) + '\n')
-  await saveSession($, { lastRun: { server: name, database: db, ms: next.ms, rows: next.rows.length, ...(next.error ? { error: next.error.slice(0, 500) } : {}), at: next.at } }, at.file)
+  // An outside save made while it ran shows now, not on the next poll.
+  if (at.file === sessionFile) await sync($)
   if (next.error) $.ui.toast(next.error.startsWith('Read-only') || next.error.startsWith('Not sent') ? 'Not sent: see the result pane' : `SQL: ${next.error.slice(0, 160)}`)
 }
 
