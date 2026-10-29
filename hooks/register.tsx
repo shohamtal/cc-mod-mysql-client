@@ -356,6 +356,8 @@ async function attach($: EngineInterface, file?: string, config?: string): Promi
   const nextConfig = config ? await resolvePath($, config, base) : kept?.config ?? `${base}/servers.json`
   const nextFile = file ? await resolvePath($, file.endsWith('.json') ? file : `${file}.json`, `${base}/sessions`) : kept?.file ?? `${base}/sessions/default.json`
   if (!(await $.fs.exists(nextConfig))) return `Config file not found: ${nextConfig}`
+  // Another console's result file: a console there would be overwritten by that console's runs.
+  if (/\.result\.json$/i.test(nextFile)) return `A session file name can't end in .result.json: ${nextFile}`
   if (!(await $.fs.exists(nextFile))) {
     const first = (await readJson($, nextConfig))?.servers?.[0]
     await $.fs.write(
@@ -430,7 +432,9 @@ async function saveSessionNow($: EngineInterface, extra: Record<string, unknown>
     if (!external || Object.keys(extra).length) {
       // Read after the file, as a sync that lands first has then already loaded an outside save into the pane.
       const mine = external ? {} : { server: await read($, server), database: await read($, database), cursorRow: await read($, cursorRow), query: await read($, query) }
-      const text = JSON.stringify({ ...old, ...mine, ...extra }, null, 2) + '\n'
+      // lastRun was written by versions before 0.3.0; the result file holds it now.
+      const { lastRun: _stale, ...kept } = old
+      const text = JSON.stringify({ ...kept, ...mine, ...extra }, null, 2) + '\n'
       if ((await $.fs.read(file).catch(() => undefined)) !== raw) {
         if (tries < 2) continue
         tell($, `Not saved: ${file} kept changing while the pane saved, so the menu pick was not saved.`)

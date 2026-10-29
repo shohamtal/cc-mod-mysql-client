@@ -5,9 +5,10 @@ const BASE = `${HOME}/.claude/mods/sql`
 const FILE = `${BASE}/sessions/a.json`
 const PANE = { plugin: 'mysql-client', surface: 'terminal', component: 'Pane', requestId: 'sql', props: { title: 'SQL', isFocused: true, bodyColumns: 110, placement: 'dock', scroll: { offset: 0, bodyRows: 44 } }, viewport: { columns: 110, rows: 44 } } as any
 // An outside writer saves the session file right after the pane's save has read it, `saves` times.
-async function world($: any, on: any, saves: number, mode: 'edit' | 'run' | 'pick' = 'edit') {
+async function world($: any, on: any, saves: number, mode: 'edit' | 'run' | 'pick' = 'edit', seed?: string) {
   const files = new Map<string, string>([[`${BASE}/servers.json`, JSON.stringify({ servers: [{ id: 'dev', name: 'Dev', host: 'db.dev', databases: ['app'] }, { id: 'b', name: 'B', host: 'db.b', databases: ['app'] }] })]])
   const mtimes = new Map<string, number>()
+  if (seed) files.set(FILE, seed)
   const toasts: string[] = []
   const sessionWrites: string[] = []
   let t = 1
@@ -78,4 +79,23 @@ test('a menu pick on a file that keeps changing never overwrites it, and the pan
 test('an editor save never overwrites a file that keeps changing', async ($, on) => {
   const w = await world($, on, 10)
   expect(JSON.parse(w.files.get(FILE)!).query).toMatch(/concurrent_edit/)
+})
+test("a console can't be named after another console's result file", async ($, on) => {
+  mock.env(on, { HOME }); mock.store(on); mock.clock(on)
+  const files = new Map<string, string>([[`${BASE}/servers.json`, JSON.stringify({ servers: [] })], [`${BASE}/sessions/x.result.json`, '{"sql":"precious"}']])
+  on('fs.exists', ($, e) => ({ value: files.has(e.path) }))
+  on('fs.read', ($, e) => { if (!files.has(e.path)) throw new Error('ENOENT'); return { value: files.get(e.path)! } })
+  on('fs.write', ($, e) => { files.set(e.path, e.text); return { value: undefined } })
+  on('fs.stat', ($, e) => ({ value: { kind: 'file', size: 1, mtimeMs: 0, isLink: false, realPath: e.path } }))
+  for (const filepath of ['x.result.json', 'x.result']) {
+    const out: any = await $.tool.call({ tool: TOOL, action: 'status', filepath } as any)
+    expect(out.isError).toBe(true)
+  }
+  expect(files.get(`${BASE}/sessions/x.result.json`)).toBe('{"sql":"precious"}')
+})
+test('a save drops the lastRun older versions wrote', async ($, on) => {
+  const w = await world($, on, 0, 'edit', JSON.stringify({ server: 'dev', database: 'app', cursorRow: 0, query: 'SELECT 0', lastRun: { ms: 1 } }))
+  const saved = JSON.parse(w.files.get(FILE)!)
+  expect(saved.query).toBe('SELECT 1')
+  expect(saved.lastRun).toBeUndefined()
 })
