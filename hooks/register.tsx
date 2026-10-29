@@ -363,10 +363,11 @@ async function ensureBase($: EngineInterface) {
 // The console this session had before a restart. One that can't be opened any more (its name is
 // now refused, or its files are gone) gives way to the default console, and the person is told why.
 async function reattach($: EngineInterface, file?: string, config?: string) {
-  const refused = await attach($, file, config).catch(err => String(err))
+  // A passing error (a broken file, a slow disk) keeps the saved console for the next try; only a refusal moves it.
+  const refused = await attach($, file, config).catch(() => undefined)
   if (!refused) return
-  const fallback = (await attach($, 'default.json', config).catch(err => String(err))) && (await attach($, 'default.json', 'servers.json').catch(err => String(err)))
-  tell($, fallback ? `SQL console: ${refused}` : `SQL console: ${refused}. Opened the default console instead.`)
+  const failed = (await attach($, 'default.json', config).catch(err => String(err))) && (await attach($, 'default.json', 'servers.json').catch(err => String(err)))
+  tell($, failed ? `SQL console: ${refused}. The default console could not be opened either: ${failed}` : `SQL console: ${refused}. Opened the default console instead.`)
 }
 
 async function attach($: EngineInterface, file?: string, config?: string): Promise<string | undefined> {
