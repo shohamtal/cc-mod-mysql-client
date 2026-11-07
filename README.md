@@ -1,5 +1,8 @@
 # MySQL Client for Claude Code
 
+[![reach](https://raw.githubusercontent.com/karanb192/awesome-claude-code-mods/main/badges/shohamtal--cc-mod-mysql-client--mysql-client-reach.svg)](https://mods.aidojo.si/mods/shohamtal--cc-mod-mysql-client--mysql-client/)
+[![validates](https://raw.githubusercontent.com/karanb192/awesome-claude-code-mods/main/badges/shohamtal--cc-mod-mysql-client--mysql-client-validates.svg)](https://mods.aidojo.si/mods/shohamtal--cc-mod-mysql-client--mysql-client/)
+
 A **MySQL client and SQL editor** in a side pane of the Claude Code terminal, like a small database client (think MySQL Workbench's query tab) beside your chat. Claude writes the SQL query into the editor, you check it and press ▶, and the results show as a table that Claude can read. It's **read-only by default**: a write (data, schema or privileges) runs only after you approve it in the pane.
 
 ![Claude writes a query into the SQL console](docs/claude-writes-query.png)
